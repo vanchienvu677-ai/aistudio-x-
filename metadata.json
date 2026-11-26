@@ -1,0 +1,6 @@
+{
+  "name": "高惠PV - 压力容器数字化交付软件",
+  "description": "高惠PV-2024 压力容器数字化交付软件三维建模与工程交付界面，支持立式、卧式、塔器及换热器快速三维建模、属性查询、剖视图、材料清单与2D工程图生成。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
