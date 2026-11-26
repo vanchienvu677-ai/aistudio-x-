@@ -166,7 +166,7 @@ export function generateAssemblyDrawingDxf(
     const comp = pm.component;
     const len = pm.axialLengthMm * scale;
     const rad = pm.outerRadiusMm * scale;
-    const ecc = pm.eccentricOffsetMm * scale;
+    const ecc = (pm.eccentricOffsetMm ?? 0) * scale;
     const posStart = pm.startPosMm * scale;
     const posEnd = pm.endPosMm * scale;
 
@@ -242,7 +242,7 @@ export function generateAssemblyDrawingDxf(
     const parent = (att.parentId ? placedById.get(att.parentId) : undefined) || placedMains[0];
     if (!parent) continue;
     const parentR = parent.outerRadiusMm * scale;
-    const parentEcc = parent.eccentricOffsetMm * scale;
+    const parentEcc = (parent.eccentricOffsetMm ?? 0) * scale;
 
     if (att.type === 'nozzle_manhole') {
       const np = att.params as NozzleManholeParams;
@@ -329,8 +329,8 @@ export function generateAssemblyDrawingDxf(
     ['DESIGN PRESS', `${spec.designPressure} MPa`],
     ['TEST PRESS', `${spec.testPressure} MPa`],
     ['DESIGN TEMP', `${spec.designTemp} C`],
-    ['CORR ALLOW', `${spec.corrosionAllowanceMm} mm`],
-    ['JOINT EFF', String(spec.weldJointEfficiency)],
+    ['CORR ALLOW', `${spec.corrosionAllowance} mm`],
+    ['JOINT EFF', String(spec.weldEfficiency)],
     ['NET WEIGHT', `${bom.totalWeightKg.toFixed(1)} kg`],
     ['VOLUME', `${bom.totalInternalVolumeM3.toFixed(3)} m3`],
   ];
@@ -784,7 +784,7 @@ export function buildDefaultLifecycleData(
   assemblies: AssemblyPoint[]
 ): LifecycleState {
   const measuredThicknessByCompId: Record<string, number> = {};
-  const corr = Math.max(0.5, Number(spec.corrosionAllowanceMm) || 2);
+  const corr = Math.max(0.5, Number(spec.corrosionAllowance) || 2);
   let idx = 0;
   for (const ap of assemblies) {
     for (const c of ap.components) {
@@ -855,7 +855,7 @@ export function computeLifecycleAssessment(
   assemblies: AssemblyPoint[],
   state: LifecycleState
 ): LifecycleAssessmentSummary {
-  const corrAllowance = Math.max(0.5, Number(spec.corrosionAllowanceMm) || 2);
+  const corrAllowance = Math.max(0.5, Number(spec.corrosionAllowance) || 2);
   const serviceYears = Math.max(0.1, Number(state.serviceYears) || 1);
   const components: ComponentCorrosionAssessment[] = [];
 

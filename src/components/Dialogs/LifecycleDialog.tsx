@@ -392,7 +392,7 @@ export const LifecycleDialog: React.FC<LifecycleDialogProps> = ({
           {activeTab === 'thickness' && (
             <div className="space-y-2">
               <div className="text-[11px] text-[#475569] bg-[#f8fafc] border border-[#e2e8f0] px-2.5 py-1.5 rounded-[2px]">
-                自动关联当前 3D 模型全部主体受压元件（名义壁厚与腐蚀裕量 {spec.corrosionAllowanceMm} mm）。修改「实测壁厚」即实时重算年腐蚀速率、剩余裕量与预测余寿。
+                自动关联当前 3D 模型全部主体受压元件（名义壁厚与腐蚀裕量 {spec.corrosionAllowance} mm）。修改「实测壁厚」即实时重算年腐蚀速率、剩余裕量与预测余寿。
               </div>
               <table className="w-full border-collapse text-[11px] tabular-nums">
                 <thead className="bg-[#eef2f6] text-[#1e293b]">

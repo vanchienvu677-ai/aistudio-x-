@@ -495,6 +495,8 @@ export interface TechnicalSpec {
   companyName: string;
   projectName: string;
   drawingNo: string;
+  revision?: string; // 图纸版次（标题栏 REV，缺省按 A）
+  ndtRequirement?: string; // NDT 要求（缺省 NB/T 47013.2）
 }
 
 export interface ViewportBackgroundConfig {
