@@ -9,6 +9,8 @@ import {
   Minus,
   Square,
   X,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import type { ComponentType } from '../types/vessel';
 import { VESSEL_PRESETS } from '../data/presets';
@@ -59,6 +61,10 @@ interface RibbonToolbarProps {
   onNewDocument: () => void;
   onOpenDocument: () => void;
   onSaveDocument: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   onExportStl: () => void;
   onOpenAbout: () => void;
   onOpenConfig: () => void;
@@ -90,6 +96,10 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   onNewDocument,
   onOpenDocument,
   onSaveDocument,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
   onExportStl,
   onOpenAbout,
   onOpenConfig,
@@ -280,6 +290,26 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
             className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] transition-colors"
           >
             <Save className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="撤销 (Cmd+Z)"
+            aria-label="撤销"
+            className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="重做 (Shift+Cmd+Z)"
+            aria-label="重做"
+            className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
