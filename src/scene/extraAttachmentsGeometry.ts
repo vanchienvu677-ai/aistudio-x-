@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { GenericAttachmentParams, RenderMode, RgbaColor } from '../types/vessel';
+import { buildPrecisionPipeFlange } from './flangeGeometry';
 
 const MM_TO_M = 0.001;
 
@@ -12,7 +13,7 @@ export type CreateMatFn = (
   metalness?: number
 ) => THREE.Material;
 
-function makeHollowRing(rIn: number, rOut: number, height: number, segs = 40): THREE.ExtrudeGeometry {
+function makeHollowRing(rIn: number, rOut: number, height: number, segs = 64): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape();
   shape.absarc(0, 0, Math.max(0.01, rOut), 0, Math.PI * 2, false);
   if (rIn > 0.005 && rIn < rOut - 0.002) {
@@ -472,17 +473,43 @@ export function buildExtraAttachmentGeometry(
         new THREE.Vector3(standOut - 0.16, runLen, runLen * 0.45),
       ];
       const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.12);
-      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 36, pipeR, 16, false), mat);
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 52, pipeR, 28, false), mat);
       holder.add(tube);
 
-      // Start & end raised-face flanges
-      const flgR = pipeR * 1.75;
-      const flg1 = new THREE.Mesh(new THREE.CylinderGeometry(flgR, flgR, 0.026, 20), boltMat);
-      flg1.rotation.z = Math.PI / 2;
-      flg1.position.set(parentR + 0.08, 0, 0);
-      const flg2 = new THREE.Mesh(new THREE.CylinderGeometry(flgR, flgR, 0.026, 20), boltMat);
-      flg2.position.set(standOut - 0.16, runLen, runLen * 0.45);
-      holder.add(flg1, flg2);
+      // Start & end precision drilled WN-RF flanges
+      const pipeODMm = Math.max(56, p.sizeB || 108);
+      const pipeFlangeParams = {
+        flangeType: 'WN-RF' as const,
+        dn: Math.round(pipeODMm * 0.9),
+        pipeOD: pipeODMm,
+        pipeThickness: Math.max(4, Math.round(pipeODMm * 0.06)),
+        flangeOD: Math.round(pipeODMm * 1.95 + 24),
+        flangeThickness: Math.max(18, Math.round(pipeODMm * 0.22)),
+        boltCount: pipeODMm >= 140 ? 8 : 4,
+      };
+      const flg1 = buildPrecisionPipeFlange({
+        params: pipeFlangeParams,
+        color: { r: 168, g: 180, b: 194, a: 255 },
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat,
+        segments: 48,
+      });
+      flg1.group.rotation.z = -Math.PI / 2;
+      flg1.group.position.set(parentR + 0.06, 0, 0);
+
+      const flg2 = buildPrecisionPipeFlange({
+        params: pipeFlangeParams,
+        color: { r: 168, g: 180, b: 194, a: 255 },
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat,
+        segments: 48,
+      });
+      flg2.group.position.set(standOut - 0.16, runLen - flg2.totalHeightM, runLen * 0.45);
+      holder.add(flg1.group, flg2.group);
 
       g.add(holder);
       return g;

@@ -545,14 +545,240 @@ export async function exportSceneToGlb(root: THREE.Object3D): Promise<ArrayBuffe
   });
 }
 
+function parseFacetedStepToGeometry(stepText: string): THREE.BufferGeometry {
+  const points = new Map<number, [number, number, number]>();
+  const pointRx =
+    /#(\d+)\s*=\s*CARTESIAN_POINT\s*\([^,]*,\s*\(\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\)\s*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = pointRx.exec(stepText)) !== null) {
+    const id = Number(m[1]);
+    const x = Number(m[2]);
+    const y = Number(m[3]);
+    const z = Number(m[4]);
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      points.set(id, [x, y, z]);
+    }
+  }
+
+  const positions: number[] = [];
+  const loopRx = /POLY_LOOP\s*\([^,]*,\s*\(([^)]+)\)\s*\)/g;
+  while ((m = loopRx.exec(stepText)) !== null) {
+    const refMatches = m[1].match(/#(\d+)/g);
+    if (!refMatches || refMatches.length < 3) continue;
+    const verts: Array<[number, number, number]> = [];
+    for (const ref of refMatches) {
+      const pt = points.get(Number(ref.slice(1)));
+      if (pt) verts.push(pt);
+    }
+    if (verts.length < 3) continue;
+    // Fan-triangulate the polygon loop
+    const v0 = verts[0];
+    for (let i = 1; i < verts.length - 1; i++) {
+      const v1 = verts[i];
+      const v2 = verts[i + 1];
+      positions.push(v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], v2[0], v2[1], v2[2]);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  if (positions.length >= 9) {
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
+function parseFacetedIgesToGeometry(igesText: string): THREE.BufferGeometry {
+  const lines = igesText.split(/\r?\n/);
+  const paramByDir = new Map<number, string[]>();
+
+  for (const rawLine of lines) {
+    if (rawLine.length < 73) continue;
+    const secChar = rawLine[72];
+    if (secChar !== 'P') continue;
+    const dirPtr = Number(rawLine.slice(64, 72).trim());
+    if (!Number.isFinite(dirPtr) || dirPtr <= 0) continue;
+    const body = rawLine.slice(0, 64).trim();
+    const arr = paramByDir.get(dirPtr);
+    if (arr) arr.push(body);
+    else paramByDir.set(dirPtr, [body]);
+  }
+
+  const positions: number[] = [];
+  for (const parts of paramByDir.values()) {
+    const joined = parts.join('').replace(/;.*$/, '');
+    const tokens = joined.split(',').map((s) => s.trim());
+    if (tokens.length < 12 || tokens[0] !== '106') continue;
+    const ip = Number(tokens[1]);
+    const n = Number(tokens[2]);
+    if (ip !== 2 || !Number.isFinite(n) || n < 3) continue;
+
+    const verts: Array<[number, number, number]> = [];
+    for (let i = 0; i < n; i++) {
+      const base = 3 + i * 3;
+      if (base + 2 >= tokens.length) break;
+      const x = Number(tokens[base]);
+      const y = Number(tokens[base + 1]);
+      const z = Number(tokens[base + 2]);
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        verts.push([x, y, z]);
+      }
+    }
+    // Strip closing duplicate vertex if present (A -> B -> C -> A)
+    if (
+      verts.length >= 4 &&
+      Math.hypot(
+        verts[0][0] - verts[verts.length - 1][0],
+        verts[0][1] - verts[verts.length - 1][1],
+        verts[0][2] - verts[verts.length - 1][2]
+      ) < 1e-4
+    ) {
+      verts.pop();
+    }
+    if (verts.length < 3) continue;
+    const v0 = verts[0];
+    for (let i = 1; i < verts.length - 1; i++) {
+      const v1 = verts[i];
+      const v2 = verts[i + 1];
+      positions.push(v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], v2[0], v2[1], v2[2]);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  if (positions.length >= 9) {
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
 /**
- * Load an external 3D CAD mesh file (.stl, .obj, .glb, .gltf) into a normalized Three.js Group
- * ready to be inspected in GHPV Viewport3D (with auto mm->m scaling and industrial PBR material).
+ * Parse OpenCASCADE ASCII BRep (.brp / .brep) Poly_Triangulation blocks into a Three.js BufferGeometry.
+ * FreeCAD / OpenCASCADE / GHPV desktop archives store shaded triangulations inside `Triangulations N` blocks.
+ */
+export function parseOpenCascadeBrepToGeometry(brepText: string): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const startMatch = brepText.match(/\bTriangulations\s+(\d+)/);
+  if (!startMatch || startMatch.index === undefined) {
+    return new THREE.BufferGeometry();
+  }
+
+  const triCount = Math.min(2000, Number(startMatch[1]) || 0);
+  if (triCount <= 0) return new THREE.BufferGeometry();
+
+  // Slice from right after `Triangulations N` up to `TShapes` (which follows Triangulations in OCC BRep)
+  const afterHeader = brepText.slice(startMatch.index + startMatch[0].length);
+  const tShapesIdx = afterHeader.search(/\bTShapes\b/);
+  const section = tShapesIdx >= 0 ? afterHeader.slice(0, tShapesIdx) : afterHeader;
+
+  // Tokenize whitespace-separated numbers
+  const tokens = section.trim().split(/\s+/);
+  let cursor = 0;
+
+  for (let t = 0; t < triCount && cursor + 3 <= tokens.length; t++) {
+    const numNodes = Number(tokens[cursor]);
+    const numTris = Number(tokens[cursor + 1]);
+    const hasUV = Number(tokens[cursor + 2]);
+    if (
+      !Number.isInteger(numNodes) ||
+      !Number.isInteger(numTris) ||
+      numNodes < 3 ||
+      numTris < 1 ||
+      numNodes > 200000 ||
+      numTris > 400000 ||
+      (hasUV !== 0 && hasUV !== 1)
+    ) {
+      break;
+    }
+    cursor += 3;
+
+    // Optional deflection scalar (OCC BRep format >= 2 writes deflection right after hasUV)
+    // Detect by checking whether tokens[cursor] is a standalone deflection before 3*numNodes + (hasUV?2*numNodes:0) + 3*numTris
+    // Look ahead to see if triangle indices are valid 1..numNodes integers with or without deflection float.
+    const uvFloats = hasUV === 1 ? numNodes * 2 : 0;
+    const baseDataLen = numNodes * 3 + uvFloats;
+
+    const looksLikeTriIndicesAt = (offset: number): boolean => {
+      if (offset + 3 > tokens.length) return false;
+      for (let k = 0; k < Math.min(9, numTris * 3); k++) {
+        const idx = Number(tokens[offset + k]);
+        if (!Number.isInteger(idx) || idx < 1 || idx > numNodes) return false;
+      }
+      return true;
+    };
+
+    if (!looksLikeTriIndicesAt(cursor + baseDataLen) && looksLikeTriIndicesAt(cursor + 1 + baseDataLen)) {
+      cursor += 1; // skip deflection float
+    }
+
+    if (cursor + baseDataLen + numTris * 3 > tokens.length) break;
+
+    const nodes = new Float64Array(numNodes * 3);
+    let validNodes = true;
+    for (let i = 0; i < numNodes * 3; i++) {
+      const v = Number(tokens[cursor + i]);
+      if (!Number.isFinite(v)) {
+        validNodes = false;
+        break;
+      }
+      nodes[i] = v;
+    }
+    cursor += numNodes * 3;
+    cursor += uvFloats; // skip UV floats
+
+    if (!validNodes) {
+      cursor += numTris * 3;
+      continue;
+    }
+
+    for (let f = 0; f < numTris; f++) {
+      const i1 = Number(tokens[cursor++]) - 1;
+      const i2 = Number(tokens[cursor++]) - 1;
+      const i3 = Number(tokens[cursor++]) - 1;
+      if (
+        i1 >= 0 &&
+        i1 < numNodes &&
+        i2 >= 0 &&
+        i2 < numNodes &&
+        i3 >= 0 &&
+        i3 < numNodes
+      ) {
+        positions.push(
+          nodes[i1 * 3],
+          nodes[i1 * 3 + 1],
+          nodes[i1 * 3 + 2],
+          nodes[i2 * 3],
+          nodes[i2 * 3 + 1],
+          nodes[i2 * 3 + 2],
+          nodes[i3 * 3],
+          nodes[i3 * 3 + 1],
+          nodes[i3 * 3 + 2]
+        );
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  if (positions.length >= 9) {
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
+/**
+ * Load an external 3D CAD mesh file (.stl, .obj, .glb, .gltf, .stp, .step, .igs, .iges, .brp, .brep)
+ * into a normalized Three.js Group ready to be inspected in GHPV Viewport3D
+ * (with auto mm->m scaling and industrial PBR material).
  */
 export async function loadExternal3DModelBuffer(
   fileName: string,
   buffer: ArrayBuffer
 ): Promise<{ name: string; object: THREE.Group; stats: SceneMeshStats }> {
+  if (!buffer || buffer.byteLength === 0) {
+    throw new Error(`模型文件 "${fileName}" 为空（0 字节），无法加载。`);
+  }
+
   const ext = fileName.split('.').pop()?.toLowerCase() || '';
   const root = new THREE.Group();
   root.name = sanitizeCadName(fileName.replace(/\.[^.]+$/, ''), 'Imported3D');
@@ -576,7 +802,7 @@ export async function loadExternal3DModelBuffer(
     root.add(mesh);
   } else if (ext === 'obj') {
     const loader = new OBJLoader();
-    const text = new TextDecoder('utf-8').decode(buffer);
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
     const objGroup = loader.parse(text);
     objGroup.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
@@ -599,19 +825,63 @@ export async function loadExternal3DModelBuffer(
       );
     });
     root.add(gltf.scene);
+  } else if (ext === 'stp' || ext === 'step') {
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+    const geo = parseFacetedStepToGeometry(text);
+    if (!geo.attributes.position || geo.attributes.position.count < 3) {
+      throw new Error(
+        `未能从 "${fileName}" 中提取到面片化 STEP (FACETED_BREP / POLY_LOOP) 网格。若为 NURBS 参数曲面 STEP，建议在 SolidWorks / FreeCAD 中导出 .stl / .obj / .glb 后再导入查看。`
+      );
+    }
+    const mesh = new THREE.Mesh(geo, defaultSteelMat());
+    mesh.name = root.name;
+    root.add(mesh);
+  } else if (ext === 'igs' || ext === 'iges') {
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+    const geo = parseFacetedIgesToGeometry(text);
+    if (!geo.attributes.position || geo.attributes.position.count < 3) {
+      throw new Error(
+        `未能从 "${fileName}" 中提取到面片化 IGES (Entity 106 Form 12) 网格。若为纯曲面 IGES，建议导出 .stl / .obj / .glb 后再导入查看。`
+      );
+    }
+    const mesh = new THREE.Mesh(geo, defaultSteelMat());
+    mesh.name = root.name;
+    root.add(mesh);
+  } else if (ext === 'brp' || ext === 'brep') {
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
+    const geo = parseOpenCascadeBrepToGeometry(text);
+    if (!geo.attributes.position || geo.attributes.position.count < 3) {
+      throw new Error(
+        `BRep 文件 "${fileName}" 未包含预计算的 Poly_Triangulation 三角网格，仅含解析拓扑曲面。`
+      );
+    }
+    const mesh = new THREE.Mesh(geo, defaultSteelMat());
+    mesh.name = root.name;
+    root.add(mesh);
   } else {
-    throw new Error(`暂不支持直接渲染 .${ext} 网格格式，请使用 .stl / .obj / .glb / .gltf 或 .ghpv 工程文件。`);
+    throw new Error(
+      `暂不支持直接渲染 .${ext} 网格格式，请使用 .stl / .obj / .glb / .gltf / .stp / .igs / .brp 或 .ghpv 工程文件。`
+    );
+  }
+
+  // Validate non-empty geometry before normalizing
+  root.updateMatrixWorld(true);
+  const preStats = computeSceneMeshStats(root);
+  if (preStats.triangleCount === 0) {
+    throw new Error(`模型文件 "${fileName}" 不包含有效的三维三角面片，请检查文件是否损坏或为空。`);
   }
 
   // Auto-normalize CAD millimeter scale -> Three.js meters (GHPV internal scene unit)
-  root.updateMatrixWorld(true);
   const rawBox = new THREE.Box3().setFromObject(root);
   const rawSize = new THREE.Vector3();
   rawBox.getSize(rawSize);
   const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) {
+    throw new Error(`模型文件 "${fileName}" 的几何坐标无效或尺寸为零，无法显示。`);
+  }
 
   if (maxDim > 80) {
-    // Almost certainly exported in millimeters (e.g. SolidWorks / GHPV STL/OBJ)
+    // Almost certainly exported in millimeters (e.g. SolidWorks / GHPV STL/OBJ/STEP/IGES/BRep)
     root.scale.setScalar(0.001);
   } else if (maxDim > 0 && maxDim < 0.05) {
     root.scale.setScalar(100);
@@ -626,4 +896,135 @@ export async function loadExternal3DModelBuffer(
 
   const stats = computeSceneMeshStats(root);
   return { name: fileName, object: root, stats };
+}
+
+/**
+ * Assemble one or more embedded 3D CAD mesh/BRep entries extracted from a .ghpv ZIP archive
+ * into a single normalized Three.js Group (preserving relative coordinates across parts).
+ */
+export async function loadEmbeddedMeshesToGroup(
+  archiveName: string,
+  entries: Array<{ name: string; ext: string; data: Uint8Array }>
+): Promise<{ name: string; object: THREE.Group; stats: SceneMeshStats; loadedCount: number } | null> {
+  if (!entries || entries.length === 0) return null;
+
+  const palette = ['#c68820', '#7fa7c9', '#9ea856', '#6b8ea8', '#b87618', '#5f8d8b'];
+  const root = new THREE.Group();
+  root.name = sanitizeCadName(archiveName.replace(/\.[^.]+$/, ''), 'GHPV_Archive3D');
+
+  let loadedCount = 0;
+
+  for (const entry of entries.slice(0, 64)) {
+    const ext = entry.ext.toLowerCase();
+    const buf = entry.data.buffer.slice(
+      entry.data.byteOffset,
+      entry.data.byteOffset + entry.data.byteLength
+    ) as ArrayBuffer;
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(palette[loadedCount % palette.length]),
+      roughness: 0.38,
+      metalness: 0.4,
+      side: THREE.DoubleSide,
+    });
+
+    try {
+      if (ext === 'stl') {
+        const geo = new STLLoader().parse(buf);
+        if (geo.attributes.position && geo.attributes.position.count >= 3) {
+          if (!geo.attributes.normal) geo.computeVertexNormals();
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.name = entry.name;
+          root.add(mesh);
+          loadedCount++;
+        }
+      } else if (ext === 'obj') {
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        const grp = new OBJLoader().parse(text);
+        let hasMesh = false;
+        grp.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const m = child as THREE.Mesh;
+            if (!m.geometry.attributes.normal) m.geometry.computeVertexNormals();
+            m.material = mat;
+            hasMesh = true;
+          }
+        });
+        if (hasMesh) {
+          grp.name = entry.name;
+          root.add(grp);
+          loadedCount++;
+        }
+      } else if (ext === 'glb' || ext === 'gltf') {
+        const loader = new GLTFLoader();
+        const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
+          loader.parse(
+            buf,
+            '',
+            (res) => resolve(res as unknown as { scene: THREE.Group }),
+            (err) => reject(err instanceof Error ? err : new Error('glTF/GLB 解析失败'))
+          );
+        });
+        gltf.scene.name = entry.name;
+        root.add(gltf.scene);
+        loadedCount++;
+      } else if (ext === 'stp' || ext === 'step') {
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        const geo = parseFacetedStepToGeometry(text);
+        if (geo.attributes.position && geo.attributes.position.count >= 3) {
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.name = entry.name;
+          root.add(mesh);
+          loadedCount++;
+        }
+      } else if (ext === 'igs' || ext === 'iges') {
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        const geo = parseFacetedIgesToGeometry(text);
+        if (geo.attributes.position && geo.attributes.position.count >= 3) {
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.name = entry.name;
+          root.add(mesh);
+          loadedCount++;
+        }
+      } else if (ext === 'brp' || ext === 'brep') {
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+        const geo = parseOpenCascadeBrepToGeometry(text);
+        if (geo.attributes.position && geo.attributes.position.count >= 3) {
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.name = entry.name;
+          root.add(mesh);
+          loadedCount++;
+        }
+      }
+    } catch {
+      // Skip unreadable sub-mesh and continue loading remaining archive meshes
+    }
+  }
+
+  if (loadedCount === 0) return null;
+
+  root.updateMatrixWorld(true);
+  const preStats = computeSceneMeshStats(root);
+  if (preStats.triangleCount === 0) return null;
+
+  const rawBox = new THREE.Box3().setFromObject(root);
+  const rawSize = new THREE.Vector3();
+  rawBox.getSize(rawSize);
+  const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z);
+  if (!Number.isFinite(maxDim) || maxDim <= 0) return null;
+
+  if (maxDim > 80) {
+    root.scale.setScalar(0.001);
+  } else if (maxDim > 0 && maxDim < 0.05) {
+    root.scale.setScalar(100);
+  }
+
+  root.updateMatrixWorld(true);
+  const scaledBox = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  scaledBox.getCenter(center);
+  root.position.sub(center);
+  root.updateMatrixWorld(true);
+
+  const stats = computeSceneMeshStats(root);
+  return { name: archiveName, object: root, stats, loadedCount };
 }

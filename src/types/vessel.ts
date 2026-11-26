@@ -470,8 +470,9 @@ export interface VesselComponent {
 export interface AssemblyPoint {
   id: string;
   name: string;
-  x: number; // mm
-  z: number; // mm
+  x: number; // 水平左右偏移 X (mm)
+  y?: number; // 前后深度偏移 Y (mm, 默认 0)
+  z: number; // 垂直标高偏移 Z (mm)
   orientation: Orientation;
   components: VesselComponent[];
 }

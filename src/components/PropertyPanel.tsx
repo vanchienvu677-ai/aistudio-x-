@@ -10,6 +10,7 @@ import {
   RotateCcw,
   SlidersHorizontal,
   FileText,
+  AlertTriangle,
 } from 'lucide-react';
 import type {
   AiParsedVesselSpec,
@@ -26,7 +27,11 @@ import {
   computeTubeLayout,
   getComponentTypeLabel,
 } from '../core/vesselMath';
-import { extractTextFromCadDatasheetFile } from '../core/ghpvImporter';
+import {
+  decodeTextBufferSmart,
+  extractTextFromCadDatasheetFile,
+  type GhpvImportResult,
+} from '../core/ghpvImporter';
 
 export type PropPanelTab = 'property' | 'userParams' | 'aiModel';
 
@@ -104,7 +109,16 @@ interface PropertyPanelProps {
   onUpdateColor: (componentId: string, color: RgbaColor) => void;
   onOpenDetailDialog: (component: VesselComponent) => void;
   onOpenTechSpec: () => void;
-  injectedAiDatasheet?: { token: number; text: string } | null;
+  importedGhpvInfo?: GhpvImportResult | null;
+  onSendImportedToAi?: () => void;
+  injectedAiDatasheet?: { token: number; text: string; notice?: string } | null;
+  injectedAiFile?: {
+    token: number;
+    fileName: string;
+    mimeType: string;
+    dataUrl: string;
+    sizeKb: number;
+  } | null;
   onApplyAiModel: (
     presetId: string,
     spec: TechnicalSpec,
@@ -133,10 +147,14 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   onUpdateColor,
   onOpenDetailDialog,
   onOpenTechSpec,
+  importedGhpvInfo = null,
+  onSendImportedToAi,
   injectedAiDatasheet = null,
+  injectedAiFile = null,
   onApplyAiModel,
 }) => {
   const [colorExpanded, setColorExpanded] = useState(true);
+  const [rawTextExpanded, setRawTextExpanded] = useState(false);
   const [dockTab, setDockTab] = useState<'ops' | 'camera'>('ops');
 
   // AI Modeling docked state (GHPV V2.1 Episode 15 + Model Config + PDF/Drawing/DXF Import)
@@ -181,10 +199,26 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   useEffect(() => {
     if (injectedAiDatasheet && injectedAiDatasheet.text) {
       setDatasheetText(injectedAiDatasheet.text);
-      setImportedTextNotice('已载入高惠原版文件提取参数，可直接点击下方按钮用 AI 补全三维模型');
+      setImportedTextNotice(
+        injectedAiDatasheet.notice ||
+          '已载入文件提取参数，可直接点击下方按钮用 AI 补全三维模型'
+      );
       setAiError(null);
     }
   }, [injectedAiDatasheet]);
+
+  useEffect(() => {
+    if (injectedAiFile && injectedAiFile.dataUrl) {
+      setAttachedMimeType(injectedAiFile.mimeType);
+      setAttachedFileName(injectedAiFile.fileName);
+      setAttachedFileSizeKb(injectedAiFile.sizeKb);
+      setAttachedFileDataUrl(injectedAiFile.dataUrl);
+      setImportedTextNotice(
+        `已通过「打开文件」载入 ${injectedAiFile.fileName}，点击下方按钮即可由 AI 解析图纸并生成 3D 模型`
+      );
+      setAiError(null);
+    }
+  }, [injectedAiFile]);
 
   const handleDocumentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -195,7 +229,9 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const isPdf = file.type === 'application/pdf' || ext === 'pdf';
     const isImage =
-      file.type.startsWith('image/') && ext !== 'svg';
+      (file.type.startsWith('image/') ||
+        ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext)) &&
+      ext !== 'svg';
 
     if (isPdf || isImage) {
       if (file.size > 15 * 1024 * 1024) {
@@ -210,16 +246,24 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
       reader.onload = () => {
         setAttachedFileDataUrl(String(reader.result || ''));
       };
+      reader.onerror = () => {
+        setAiError(`读取文件 "${file.name}" 失败，请重试。`);
+      };
       reader.readAsDataURL(file);
     } else if (['dxf', 'svg', 'txt', 'csv', 'json', 'xml'].includes(ext)) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const raw = String(reader.result || '');
-        const extracted = extractTextFromCadDatasheetFile(file.name, raw);
-        setDatasheetText(extracted);
-        setImportedTextNotice(`已解析 ${file.name} (${ext.toUpperCase()}) 文本内容并填入下方数据表`);
-      };
-      reader.readAsText(file);
+      file
+        .arrayBuffer()
+        .then((buf) => {
+          const raw = decodeTextBufferSmart(buf);
+          const extracted = extractTextFromCadDatasheetFile(file.name, raw);
+          setDatasheetText(extracted);
+          setImportedTextNotice(
+            `已解析 ${file.name} (${ext.toUpperCase()} · 自动适配 UTF-8/GBK) 并填入下方数据表`
+          );
+        })
+        .catch(() => {
+          setAiError(`读取文件 "${file.name}" 失败，请检查文件权限或重新选择。`);
+        });
     } else {
       setAiError(`暂不支持 .${ext} 格式，请导入 PDF、PNG/JPG/WEBP 图纸或 DXF/SVG/CSV/TXT 数据表。`);
     }
@@ -797,15 +841,21 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             {[
               ['设备位号', spec.vesselTag],
               ['设备名称', spec.vesselName],
+              ['容器类别', spec.vesselClass],
               ['设计标准', spec.designCode],
               ['设计压力(MPa)', String(spec.designPressure)],
               ['工作压力(MPa)', String(spec.workPressure)],
               ['试验压力(MPa)', String(spec.testPressure)],
               ['设计温度(°C)', String(spec.designTemp)],
+              ['工作温度(°C)', String(spec.workTemp)],
+              ['工作介质', spec.medium],
               ['腐蚀裕量(mm)', String(spec.corrosionAllowance)],
               ['焊缝系数', String(spec.weldEfficiency)],
               ['无损检测', spec.ndtMethod],
+              ['热处理', spec.heatTreatment],
               ['图号', spec.drawingNo],
+              ['项目名称', spec.projectName],
+              ['设计单位', spec.companyName],
             ].map(([k, v], i) => (
               <div
                 key={k}
@@ -817,10 +867,170 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   {k}
                 </div>
                 <div className="px-1.5 py-0.5 flex items-center text-[#0f172a] truncate" title={v}>
-                  {v}
+                  {v || '—'}
                 </div>
               </div>
             ))}
+
+            {/* Imported GHPV Model Archive (Provenance, Archive Files, Extra Metadata, Warnings, Raw Text) */}
+            {importedGhpvInfo && (
+              <div className="mt-1 border-t-2 border-[#bfdbfe] select-text">
+                <div className="h-[22px] px-2 flex items-center justify-between bg-[#eff6ff] border-b border-[#bfdbfe] text-[10.5px] font-semibold text-[#1e3a8a]">
+                  <span>导入模型档案</span>
+                  <span className="px-1 py-0 bg-white border border-[#93c5fd] rounded-[2px] text-[9.5px] font-normal text-[#1d4ed8]">
+                    {importedGhpvInfo.sourceFormat === 'ghpv_json'
+                      ? 'GHPV 原生参数化'
+                      : importedGhpvInfo.sourceFormat === 'ghpv_zip_archive'
+                      ? '高惠 ZIP 工程包'
+                      : importedGhpvInfo.sourceFormat === 'ghpv_xml_text'
+                      ? '高惠 XML/文本'
+                      : '高惠原版二进制'}
+                  </span>
+                </div>
+
+                {[
+                  ['来源文件', importedGhpvInfo.fileName],
+                  [
+                    '导入统计',
+                    `${importedGhpvInfo.assemblies.length} 装配点 / ${importedGhpvInfo.componentCount} 项`,
+                  ],
+                  ...(importedGhpvInfo.archiveEntries && importedGhpvInfo.archiveEntries.length > 0
+                    ? [['压缩包内容', `${importedGhpvInfo.archiveEntries.length} 个内部文件`]]
+                    : []),
+                  ...(importedGhpvInfo.reboundAttachmentCount && importedGhpvInfo.reboundAttachmentCount > 0
+                    ? [['重绑附属件', `${importedGhpvInfo.reboundAttachmentCount} 项已自动挂载`]]
+                    : []),
+                ].map(([k, v], idx) => (
+                  <div
+                    key={k}
+                    className={`grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] ${
+                      idx % 2 === 1 ? 'bg-[#f8fafc]' : 'bg-white'
+                    }`}
+                  >
+                    <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155] truncate">
+                      {k}
+                    </div>
+                    <div className="px-1.5 py-0.5 flex items-center text-[#0f172a] truncate" title={v}>
+                      {v}
+                    </div>
+                  </div>
+                ))}
+
+                {importedGhpvInfo.archiveEntries && importedGhpvInfo.archiveEntries.length > 0 && (
+                  <div>
+                    <div className="h-[20px] px-2 flex items-center justify-between bg-[#f1f5f9] border-b border-[#e2e8f0] text-[10px] font-semibold text-[#334155]">
+                      <span>压缩包文件清单</span>
+                      <span className="text-[#64748b] font-normal">
+                        {importedGhpvInfo.archiveEntries.length} 个
+                      </span>
+                    </div>
+                    {importedGhpvInfo.archiveEntries.slice(0, 20).map((ent, idx) => (
+                      <div
+                        key={`${ent.name}-${idx}`}
+                        className={`grid grid-cols-[1fr_54px] border-b border-[#e5e7eb] min-h-[20px] ${
+                          idx % 2 === 1 ? 'bg-[#f8fafc]' : 'bg-white'
+                        }`}
+                      >
+                        <div
+                          className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155] truncate"
+                          title={ent.name}
+                        >
+                          {ent.name}
+                        </div>
+                        <div className="px-1.5 py-0.5 flex items-center justify-end text-[10px] text-[#64748b]">
+                          {ent.kind}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {importedGhpvInfo.warnings && importedGhpvInfo.warnings.length > 0 && (
+                  <div className="p-1.5 bg-[#fffbeb] border-b border-[#fde68a] text-[10px] text-[#92400e] space-y-0.5">
+                    <div className="flex items-center gap-1 font-semibold">
+                      <AlertTriangle className="w-3 h-3 shrink-0 text-[#d97706]" />
+                      <span>解析提示 ({importedGhpvInfo.warnings.length})</span>
+                    </div>
+                    {importedGhpvInfo.warnings.map((w, idx) => (
+                      <div key={idx} className="leading-snug">
+                        • {w}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {importedGhpvInfo.extraMetadata && importedGhpvInfo.extraMetadata.length > 0 && (
+                  <div>
+                    <div className="h-[20px] px-2 flex items-center justify-between bg-[#f1f5f9] border-b border-[#e2e8f0] text-[10px] font-semibold text-[#334155]">
+                      <span>模型附加字段</span>
+                      <span className="text-[#64748b] font-normal">
+                        {importedGhpvInfo.extraMetadata.length} 项
+                      </span>
+                    </div>
+                    {importedGhpvInfo.extraMetadata.map((item, idx) => (
+                      <div
+                        key={`${item.key}-${idx}`}
+                        className={`grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[20px] ${
+                          idx % 2 === 1 ? 'bg-[#f8fafc]' : 'bg-white'
+                        }`}
+                      >
+                        <div
+                          className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#475569] truncate"
+                          title={item.key}
+                        >
+                          {item.key}
+                        </div>
+                        <div
+                          className="px-1.5 py-0.5 flex items-center text-[#0f172a] truncate"
+                          title={item.value}
+                        >
+                          {item.value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {importedGhpvInfo.extractedText && (
+                  <div className="border-b border-[#e5e7eb] bg-white">
+                    <button
+                      type="button"
+                      onClick={() => setRawTextExpanded((v) => !v)}
+                      className="w-full h-[21px] px-2 flex items-center justify-between bg-[#f8fafc] hover:bg-[#eef2f6] text-[10.5px] text-[#334155]"
+                    >
+                      <span className="flex items-center gap-1">
+                        {rawTextExpanded ? (
+                          <ChevronDown className="w-3 h-3" />
+                        ) : (
+                          <ChevronRight className="w-3 h-3" />
+                        )}
+                        <span>原始提取文本</span>
+                      </span>
+                      <span className="text-[9.5px] text-[#64748b]">
+                        {importedGhpvInfo.extractedText.length} 字符
+                      </span>
+                    </button>
+                    {rawTextExpanded && (
+                      <pre className="p-1.5 max-h-[140px] overflow-auto text-[10px] leading-snug font-mono bg-[#f8fafc] text-[#334155] whitespace-pre-wrap break-all border-t border-[#e2e8f0]">
+                        {importedGhpvInfo.extractedText}
+                      </pre>
+                    )}
+                    {importedGhpvInfo.sourceFormat !== 'ghpv_json' && onSendImportedToAi && (
+                      <div className="p-1.5 border-t border-[#e2e8f0]">
+                        <button
+                          type="button"
+                          onClick={onSendImportedToAi}
+                          className="w-full h-[22px] flex items-center justify-center gap-1 bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-[10.5px] rounded-[2px]"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          <span>送入 AI 补全细部参数</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : !component ? (
           assembly ? (
@@ -1029,12 +1239,13 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           ] as Array<[PropPanelTab, string]>
         ).map(([key, label]) => {
           const active = activePropTab === key;
+          const showImportedDot = key === 'userParams' && !!importedGhpvInfo;
           return (
             <button
               key={key}
               type="button"
               onClick={() => onChangePropTab(key)}
-              className={`px-2.5 h-full text-[10.5px] border-x border-b rounded-b-[2px] ${
+              className={`px-2.5 h-full text-[10.5px] border-x border-b rounded-b-[2px] flex items-center gap-1 ${
                 active
                   ? key === 'aiModel'
                     ? 'bg-[#eff6ff] text-[#1d4ed8] font-semibold border-[#93c5fd]'
@@ -1042,7 +1253,14 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   : 'text-[#475569] border-transparent hover:bg-[#e2e8f0]'
               }`}
             >
-              {label}
+              <span>{label}</span>
+              {showImportedDot && (
+                <span
+                  aria-label="含导入模型信息"
+                  title="已载入导入模型完整参数与档案"
+                  className="w-1.5 h-1.5 rounded-full bg-[#2563eb] inline-block"
+                />
+              )}
             </button>
           );
         })}

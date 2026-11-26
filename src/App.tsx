@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AssemblyPoint,
   CameraAngles,
@@ -11,7 +11,7 @@ import type {
   ViewportBackgroundConfig,
 } from './types/vessel';
 import { createDefaultComponent, VESSEL_PRESETS } from './data/presets';
-import { autoFixInterferences, generateBOM } from './core/vesselMath';
+import { autoArrangeAssemblies, autoFixInterferences, generateBOM } from './core/vesselMath';
 import { RibbonToolbar, type RibbonTab } from './components/RibbonToolbar';
 import { StructureTree } from './components/StructureTree';
 import { PropertyPanel, type PropPanelTab } from './components/PropertyPanel';
@@ -37,11 +37,18 @@ import {
   PdmsExportDialog,
 } from './components/Dialogs/V16Dialogs';
 import { Export3DModelDialog, ImportModelDialog } from './components/Dialogs/IoDialogs';
+import { LifecycleDialog } from './components/Dialogs/LifecycleDialog';
 import {
+  buildDefaultLifecycleData,
+  type LifecycleState,
+} from './core/douyinDeliveryTools';
+import {
+  loadEmbeddedMeshesToGroup,
   loadExternal3DModelBuffer,
   type Export3DFormat,
   type SceneMeshStats,
 } from './scene/cadExporters';
+import { disposeObjectTree } from './scene/vesselGeometry';
 import type { GhpvImportResult } from './core/ghpvImporter';
 
 function cloneAssemblies(list: AssemblyPoint[]): AssemblyPoint[] {
@@ -67,6 +74,14 @@ export default function App() {
       null
   );
   const [selectedSubNode, setSelectedSubNode] = useState<string | null>(null);
+  const [layoutUndoStack, setLayoutUndoStack] = useState<
+    Array<{
+      assemblies: AssemblyPoint[];
+      selectedAssemblyId: string;
+      selectedComponentId: string | null;
+      selectedSubNode: string | null;
+    }>
+  >([]);
 
   // Viewport visual controls
   const [renderMode, setRenderMode] = useState<RenderMode>('solid');
@@ -107,6 +122,7 @@ export default function App() {
   const [showTechSpec, setShowTechSpec] = useState(false);
   const [showBom, setShowBom] = useState(false);
   const [show2DCad, setShow2DCad] = useState(false);
+  const [drawing2DInitialMode, setDrawing2DInitialMode] = useState<'assembly' | 'quad_overview' | 'unroll'>('assembly');
   const [showSectionDialog, setShowSectionDialog] = useState(false);
   const [showConfigDialog, setShowConfigDialog] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
@@ -116,6 +132,15 @@ export default function App() {
   const [showCostEstimate, setShowCostEstimate] = useState(false);
   const [showPdmsExport, setShowPdmsExport] = useState(false);
   const [showInterferenceCheck, setShowInterferenceCheck] = useState(false);
+  const [showLifecycle, setShowLifecycle] = useState(false);
+  const [lifecycleByKey, setLifecycleByKey] = useState<Record<string, LifecycleState>>(() => {
+    try {
+      const saved = window.localStorage.getItem('ghpv_lifecycle_v1');
+      return saved ? (JSON.parse(saved) as Record<string, LifecycleState>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [showExport3D, setShowExport3D] = useState(false);
   const [showImportModel, setShowImportModel] = useState(false);
   const [exportMeshStats, setExportMeshStats] = useState<SceneMeshStats>({
@@ -124,14 +149,57 @@ export default function App() {
     sizeMm: [0, 0, 0],
   });
   const [externalMeshModel, setExternalMeshModel] = useState<ExternalMeshModel | null>(null);
-  const [injectedAiDatasheet, setInjectedAiDatasheet] = useState<{ token: number; text: string } | null>(null);
+  const externalMeshModelRef = useRef<ExternalMeshModel | null>(null);
+  const [documentLoadVersion, setDocumentLoadVersion] = useState<number>(0);
+  const [injectedAiDatasheet, setInjectedAiDatasheet] = useState<{
+    token: number;
+    text: string;
+    notice?: string;
+  } | null>(null);
+  const [injectedAiFile, setInjectedAiFile] = useState<{
+    token: number;
+    fileName: string;
+    mimeType: string;
+    dataUrl: string;
+    sizeKb: number;
+  } | null>(null);
   const [propTab, setPropTab] = useState<PropPanelTab>('property');
+  const [importedGhpvInfo, setImportedGhpvInfo] = useState<GhpvImportResult | null>(null);
 
   const [statusMessage, setStatusMessage] = useState<string>(
     '就绪 — GHPV V2.1 高惠PV压力容器数字化交付系统'
   );
 
   const viewportRef = useRef<Viewport3DHandle | null>(null);
+
+  const replaceExternalMeshModel = useCallback((next: ExternalMeshModel | null) => {
+    const prev = externalMeshModelRef.current;
+    if (prev && prev.object !== next?.object) {
+      disposeObjectTree(prev.object);
+    }
+    externalMeshModelRef.current = next;
+    setExternalMeshModel(next);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (externalMeshModelRef.current) {
+        disposeObjectTree(externalMeshModelRef.current.object);
+        externalMeshModelRef.current = null;
+      }
+    };
+  }, []);
+
+  const resetSectionCut = useCallback(() => {
+    setShowSectionDialog(false);
+    setSectionState((s) => ({
+      ...s,
+      enabled: false,
+      xEnabled: false,
+      yEnabled: false,
+      zEnabled: false,
+    }));
+  }, []);
 
   const bomSummary = useMemo(() => generateBOM(assemblies), [assemblies]);
 
@@ -150,13 +218,17 @@ export default function App() {
   }, [assemblies, selectedComponentId]);
 
   const handleSelectPreset = (presetId: string) => {
+    if (presetId === '__imported__') return;
     const preset = VESSEL_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
-    setExternalMeshModel(null);
+    replaceExternalMeshModel(null);
+    setImportedGhpvInfo(null);
+    setLayoutUndoStack([]);
     const cloned = cloneAssemblies(preset.assemblies);
     setActivePresetId(preset.id);
     setSpec({ ...preset.spec });
     setAssemblies(cloned);
+    setDocumentLoadVersion((v) => v + 1);
     setSelectedAssemblyId(cloned[0].id);
     const firstMain =
       cloned[0].components.find((c) => c.type === 'shell' || c.type === 'spherical_tank') ||
@@ -167,7 +239,7 @@ export default function App() {
       setSelectedSubNode('折流板8');
       setExplodeEnabled(true);
       setExplodeFactor(0.68);
-      setSectionState((s) => ({ ...s, enabled: false, xEnabled: false, yEnabled: false, zEnabled: false }));
+      resetSectionCut();
       setStatusMessage(`已加载 ${preset.label} — 已自动开启 GHPV 三维爆炸视图 (可拖动右下角滑块实时展开/复位)`);
       return;
     }
@@ -175,7 +247,7 @@ export default function App() {
     setSelectedSubNode(null);
     setExplodeEnabled(false);
     setExplodeFactor(0);
-    setSectionState((s) => ({ ...s, enabled: false, xEnabled: false, yEnabled: false, zEnabled: false }));
+    resetSectionCut();
     setStatusMessage(`已加载示例模型: ${preset.label}`);
   };
 
@@ -184,15 +256,19 @@ export default function App() {
     nextSpec: TechnicalSpec,
     nextAssemblies: AssemblyPoint[]
   ) => {
-    setExternalMeshModel(null);
+    replaceExternalMeshModel(null);
+    setImportedGhpvInfo(null);
+    setLayoutUndoStack([]);
     setActivePresetId(presetId);
     setSpec(nextSpec);
     setAssemblies(nextAssemblies);
+    setDocumentLoadVersion((v) => v + 1);
     setSelectedAssemblyId(nextAssemblies[0].id);
     setSelectedComponentId(nextAssemblies[0].components[0]?.id ?? null);
     setSelectedSubNode(null);
     setExplodeEnabled(false);
     setExplodeFactor(0);
+    resetSectionCut();
     setStatusMessage(`向导式建模完成: ${nextSpec.vesselTag} (${nextSpec.vesselName})`);
   };
 
@@ -213,10 +289,13 @@ export default function App() {
     nextAssemblies: AssemblyPoint[],
     notes: string
   ) => {
-    setExternalMeshModel(null);
+    replaceExternalMeshModel(null);
+    setImportedGhpvInfo(null);
+    setLayoutUndoStack([]);
     setActivePresetId(presetId);
     setSpec(nextSpec);
     setAssemblies(nextAssemblies);
+    setDocumentLoadVersion((v) => v + 1);
     setSelectedAssemblyId(nextAssemblies[0].id);
     const firstMain =
       nextAssemblies[0].components.find((c) => c.type === 'shell' || c.type === 'spherical_tank') ||
@@ -225,6 +304,7 @@ export default function App() {
     setSelectedSubNode(null);
     setExplodeEnabled(false);
     setExplodeFactor(0);
+    resetSectionCut();
     setStatusMessage(`AI 建模完成: ${nextSpec.vesselTag} (${notes || nextSpec.vesselName})`);
   };
 
@@ -237,7 +317,9 @@ export default function App() {
   };
 
   const handleNewDocument = () => {
-    setExternalMeshModel(null);
+    replaceExternalMeshModel(null);
+    setImportedGhpvInfo(null);
+    setLayoutUndoStack([]);
     const newAp: AssemblyPoint = {
       id: `ap-${Date.now()}`,
       name: '装配点1',
@@ -247,15 +329,17 @@ export default function App() {
       components: [],
     };
     setAssemblies([newAp]);
+    setDocumentLoadVersion((v) => v + 1);
     setSelectedAssemblyId(newAp.id);
     setSelectedComponentId(null);
     setSelectedSubNode(null);
     setExplodeEnabled(false);
     setExplodeFactor(0);
+    resetSectionCut();
     setStatusMessage('已新建空白工程，请点击上方主构件或向导式建模开始设计');
   };
 
-  const handleSaveDocument = () => {
+  const handleSaveDocument = useCallback(() => {
     const payload = JSON.stringify({ version: 'GHPV-V2.1', spec, assemblies }, null, 2);
     const blob = new Blob([payload], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -265,11 +349,11 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
     setStatusMessage(`已保存高惠工程文件: ${spec.vesselTag || 'vessel'}.ghpv`);
-  };
+  }, [spec, assemblies]);
 
-  const handleOpenDocument = () => {
+  const handleOpenDocument = useCallback(() => {
     setShowImportModel(true);
-  };
+  }, []);
 
   const handleOpenExport3D = () => {
     const stats = viewportRef.current?.getMeshStats() || {
@@ -305,9 +389,13 @@ export default function App() {
   };
 
   const handleImportGhpvResult = (result: GhpvImportResult) => {
-    setExternalMeshModel(null);
+    replaceExternalMeshModel(null);
+    setLayoutUndoStack([]);
+    setImportedGhpvInfo(result);
+    setActivePresetId('__imported__');
     setSpec(result.spec);
     setAssemblies(result.assemblies);
+    setDocumentLoadVersion((v) => v + 1);
     setSelectedAssemblyId(result.assemblies[0]?.id || '');
     const firstMain =
       result.assemblies[0]?.components.find((c) => c.type === 'shell' || c.type === 'spherical_tank') ||
@@ -317,12 +405,33 @@ export default function App() {
     setSelectedSubNode(null);
     setExplodeEnabled(false);
     setExplodeFactor(0);
+    resetSectionCut();
     setStatusMessage(result.summary);
+
+    // If the unpacked .ghpv ZIP archive contains real embedded 3D geometry (.brp/.stl/.obj/.glb/.stp/.igs),
+    // automatically load it into the 3D viewport (user can switch back to parametric mode anytime via the viewport banner).
+    if (result.embeddedMeshes && result.embeddedMeshes.length > 0) {
+      void loadEmbeddedMeshesToGroup(result.fileName, result.embeddedMeshes).then((loaded) => {
+        if (!loaded) return;
+        replaceExternalMeshModel({
+          name: `${result.fileName} (内嵌 ${loaded.loadedCount} 个三维实体)`,
+          object: loaded.object,
+          stats: loaded.stats,
+          loadToken: Date.now(),
+        });
+        setStatusMessage(
+          `已解压 ${result.fileName} 并加载内嵌 3D 实体 (${loaded.loadedCount} 项 / ${loaded.stats.triangleCount.toLocaleString()} 面 · 可在视口顶部切换回参数化模型)`
+        );
+      });
+    }
   };
 
   const handleImportExternal3DFile = async (fileName: string, buffer: ArrayBuffer) => {
     const loaded = await loadExternal3DModelBuffer(fileName, buffer);
-    setExternalMeshModel(loaded);
+    replaceExternalMeshModel({ ...loaded, loadToken: Date.now() });
+    setExplodeEnabled(false);
+    setExplodeFactor(0);
+    resetSectionCut();
     setStatusMessage(
       `已导入外部三维模型查看: ${loaded.name} (${loaded.stats.triangleCount.toLocaleString()} 面 · ${loaded.stats.sizeMm.join('×')} mm)`
     );
@@ -344,6 +453,68 @@ export default function App() {
     setSelectedComponentId(null);
     setStatusMessage(`已新建 ${newAp.name} (立式)`);
   };
+
+  const handleAutoArrangeAssemblies = () => {
+    const res = autoArrangeAssemblies(assemblies);
+    if (!res.changed) {
+      setStatusMessage(res.summary);
+      return;
+    }
+    const snapshot = {
+      assemblies: cloneAssemblies(assemblies),
+      selectedAssemblyId,
+      selectedComponentId,
+      selectedSubNode,
+    };
+    setLayoutUndoStack((prev) => [...prev.slice(-19), snapshot]);
+    replaceExternalMeshModel(null);
+    setAssemblies(res.assemblies);
+    setStatusMessage(res.summary);
+  };
+
+  const handleUndoAutoArrange = useCallback(() => {
+    if (layoutUndoStack.length === 0) return;
+    const last = layoutUndoStack[layoutUndoStack.length - 1];
+    const remainingCount = layoutUndoStack.length - 1;
+    setLayoutUndoStack((prev) => prev.slice(0, -1));
+    setAssemblies(last.assemblies);
+    setSelectedAssemblyId(last.selectedAssemblyId);
+    setSelectedComponentId(last.selectedComponentId);
+    setSelectedSubNode(last.selectedSubNode);
+    setStatusMessage(
+      remainingCount > 0
+        ? `已撤销装配点自动重排，恢复至上一布局（剩余 ${remainingCount} 步可撤销）`
+        : '已撤销装配点自动重排，恢复至初始布局'
+    );
+  }, [layoutUndoStack]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+      const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isEditingText =
+        tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(target?.isContentEditable);
+
+      if (key === 'o') {
+        e.preventDefault();
+        handleOpenDocument();
+        return;
+      }
+      if (key === 's') {
+        e.preventDefault();
+        handleSaveDocument();
+        return;
+      }
+      if (key === 'z' && !isEditingText && layoutUndoStack.length > 0) {
+        e.preventDefault();
+        handleUndoAutoArrange();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [layoutUndoStack.length, handleUndoAutoArrange, handleOpenDocument, handleSaveDocument]);
 
   const handleOpenAddComponent = (type: ComponentType) => {
     const targetAp =
@@ -518,6 +689,12 @@ export default function App() {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         activePresetId={activePresetId}
+        importedDocLabel={
+          importedGhpvInfo
+            ? `${importedGhpvInfo.spec.vesselTag} (${importedGhpvInfo.fileName})`
+            : null
+        }
+        activeVesselTitle={`${spec.vesselTag} ${spec.vesselName}`}
         onSelectPreset={handleSelectPreset}
         onNewDocument={handleNewDocument}
         onOpenDocument={handleOpenDocument}
@@ -528,7 +705,14 @@ export default function App() {
         onOpenTechSpec={() => setShowTechSpec(true)}
         onAddComponent={handleOpenAddComponent}
         onOpenBom={() => setShowBom(true)}
-        onOpen2DCad={() => setShow2DCad(true)}
+        onOpen2DCad={() => {
+          setDrawing2DInitialMode('assembly');
+          setShow2DCad(true);
+        }}
+        onOpenShellUnroll={() => {
+          setDrawing2DInitialMode('unroll');
+          setShow2DCad(true);
+        }}
         onOpenWizard={() => setShowWizard(true)}
         onOpenMaterialLib={() => setShowMaterialLib(true)}
         onOpenBatchNozzle={() => setShowBatchNozzle(true)}
@@ -539,6 +723,7 @@ export default function App() {
           setPropTab('aiModel');
           setStatusMessage('已打开右侧 GHPV V2.1 AI 建模面板 — 粘贴数据表或上传条件图即可自动生成 3D 设备');
         }}
+        onOpenLifecycle={() => setShowLifecycle(true)}
       />
 
       {/* 3-Column CAD Workspace: Structure Tree | 3D Viewport | Property + Dock Panel */}
@@ -564,6 +749,10 @@ export default function App() {
             setSelectedSubNode(subNode);
           }}
           onAddAssemblyPoint={handleAddAssemblyPoint}
+          onAutoArrange={handleAutoArrangeAssemblies}
+          onUndoArrange={handleUndoAutoArrange}
+          canUndoArrange={layoutUndoStack.length > 0}
+          undoCount={layoutUndoStack.length}
           onDoubleClickComponent={(comp) => {
             const ownerAp =
               assemblies.find((a) => a.components.some((c) => c.id === comp.id))?.id ||
@@ -577,9 +766,10 @@ export default function App() {
           assemblies={assemblies}
           selectedComponentId={selectedComponentId}
           selectedSubNode={selectedSubNode}
+          documentLoadVersion={documentLoadVersion}
           externalMeshModel={externalMeshModel}
           onClearExternalModel={() => {
-            setExternalMeshModel(null);
+            replaceExternalMeshModel(null);
             setStatusMessage(`已切换回参数化编辑模型 (${spec.vesselTag})`);
           }}
           renderMode={renderMode}
@@ -647,9 +837,24 @@ export default function App() {
             setEditingDialog({ assemblyId: ownerAp, component: comp, isNew: false });
           }}
           onOpenTechSpec={() => setShowTechSpec(true)}
+          importedGhpvInfo={importedGhpvInfo}
+          onSendImportedToAi={
+            importedGhpvInfo?.extractedText
+              ? () => {
+                  setPropTab('aiModel');
+                  setInjectedAiDatasheet({
+                    token: Date.now(),
+                    text: `[高惠原版文件解析文本: ${importedGhpvInfo.fileName}]\n${importedGhpvInfo.extractedText || ''}`,
+                    notice: '已载入高惠原版文件提取参数，可直接点击下方按钮用 AI 补全三维模型',
+                  });
+                  setStatusMessage(`已将 ${importedGhpvInfo.fileName} 提取的参数送入右侧 AI 建模面板`);
+                }
+              : undefined
+          }
           injectedAiDatasheet={injectedAiDatasheet}
+          injectedAiFile={injectedAiFile}
           onApplyAiModel={(presetId, nextSpec, nextAssemblies, notes) => {
-            setExternalMeshModel(null);
+            replaceExternalMeshModel(null);
             handleApplyAiModel(presetId, nextSpec, nextAssemblies, notes);
           }}
         />
@@ -700,7 +905,12 @@ export default function App() {
 
       {/* GH2V2D 2D Engineering Drawing Dialog */}
       {show2DCad && (
-        <Drawing2DDialog assemblies={assemblies} spec={spec} onClose={() => setShow2DCad(false)} />
+        <Drawing2DDialog
+          assemblies={assemblies}
+          spec={spec}
+          initialSheetMode={drawing2DInitialMode}
+          onClose={() => setShow2DCad(false)}
+        />
       )}
 
       {/* Guided Wizard Dialog (向导式建模) */}
@@ -709,8 +919,8 @@ export default function App() {
           onApply={handleApplyWizard}
           onGenerateAndDraw={(presetId, nextSpec, nextAssemblies) => {
             handleApplyWizard(presetId, nextSpec, nextAssemblies);
+            setDrawing2DInitialMode('assembly');
             setShow2DCad(true);
-            setStatusMessage(`向导式建模并已一键生成 2D 工程图: ${nextSpec.vesselTag}`);
           }}
           onClose={() => setShowWizard(false)}
         />
@@ -758,10 +968,35 @@ export default function App() {
           onAutoFix={handleAutoFixInterferences}
           onOpen2DDrawing={() => {
             setShowInterferenceCheck(false);
+            setDrawing2DInitialMode('assembly');
             setShow2DCad(true);
-            setStatusMessage(`干涉检查通过，已一键生成 2D 工程图 (${spec.vesselTag})`);
           }}
           onClose={() => setShowInterferenceCheck(false)}
+        />
+      )}
+
+      {/* Full Lifecycle Management Dialog (全生命周期管理 — GHPV Ep 10) */}
+      {showLifecycle && (
+        <LifecycleDialog
+          spec={spec}
+          assemblies={assemblies}
+          state={
+            lifecycleByKey[`${activePresetId}:${spec.vesselTag}`] ||
+            buildDefaultLifecycleData(spec, assemblies)
+          }
+          onChangeState={(next) => {
+            const key = `${activePresetId}:${spec.vesselTag}`;
+            setLifecycleByKey((prev) => {
+              const updated = { ...prev, [key]: next };
+              try {
+                window.localStorage.setItem('ghpv_lifecycle_v1', JSON.stringify(updated));
+              } catch {
+                // Ignore storage quota issues
+              }
+              return updated;
+            });
+          }}
+          onClose={() => setShowLifecycle(false)}
         />
       )}
 
@@ -796,17 +1031,33 @@ export default function App() {
         />
       )}
 
-      {/* Import GHPV Native/Legacy & External 3D Model Dialog */}
+      {/* Import GHPV Native/Legacy, External 3D & Drawing/PDF Dialog */}
       {showImportModel && (
         <ImportModelDialog
           onImportGhpvResult={handleImportGhpvResult}
-          onSendExtractedToAi={(fileName, extractedText) => {
+          onInspectImportedParams={() => {
+            setPropTab('userParams');
+            setShowImportModel(false);
+          }}
+          onSendExtractedToAi={(fileName, extractedText, notice) => {
             setPropTab('aiModel');
             setInjectedAiDatasheet({
               token: Date.now(),
-              text: `[高惠原版文件解析文本: ${fileName}]\n${extractedText}`,
+              text: extractedText,
+              notice,
             });
             setStatusMessage(`已将 ${fileName} 提取的参数送入右侧 AI 建模面板`);
+          }}
+          onSendBinaryDrawingToAi={(fileName, mimeType, dataUrl, sizeKb) => {
+            setPropTab('aiModel');
+            setInjectedAiFile({
+              token: Date.now(),
+              fileName,
+              mimeType,
+              dataUrl,
+              sizeKb,
+            });
+            setStatusMessage(`已载入图纸/PDF (${fileName}) 至右侧 AI 建模面板，点击「AI 解析并生成 3D」即可建模`);
           }}
           onImportExternal3DFile={handleImportExternal3DFile}
           onClose={() => setShowImportModel(false)}

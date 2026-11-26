@@ -11,10 +11,13 @@ import type {
 } from '../../types/vessel';
 import {
   bomToCsv,
+  computeShellUnrollData,
   computeTubeLayout,
   generateBOM,
+  generateShellUnrollDxf,
   layoutAssemblyMainComponents,
 } from '../../core/vesselMath';
+import { generateAssemblyDrawingDxf } from '../../core/douyinDeliveryTools';
 
 function triggerDownload(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -173,11 +176,18 @@ export const BomDialog: React.FC<{
 export const Drawing2DDialog: React.FC<{
   assemblies: AssemblyPoint[];
   spec: TechnicalSpec;
+  initialSheetMode?: 'assembly' | 'quad_overview' | 'unroll';
   onClose: () => void;
-}> = ({ assemblies, spec, onClose }) => {
+}> = ({ assemblies, spec, initialSheetMode = 'assembly', onClose }) => {
   const [cadDarkTheme, setCadDarkTheme] = useState(true);
-  const [sheetMode, setSheetMode] = useState<'assembly' | 'quad_overview'>('assembly');
-  const ap = assemblies[0];
+  const [sheetMode, setSheetMode] = useState<'assembly' | 'quad_overview' | 'unroll'>(initialSheetMode);
+  const unrollSheets = React.useMemo(() => computeShellUnrollData(assemblies), [assemblies]);
+  const [selectedShellId, setSelectedShellId] = useState<string>(() => unrollSheets[0]?.shellId ?? '');
+  const activeUnrollSheet =
+    unrollSheets.find((s) => s.shellId === selectedShellId) ?? unrollSheets[0] ?? null;
+
+  const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>(() => assemblies[0]?.id ?? '');
+  const ap = assemblies.find((a) => a.id === selectedAssemblyId) || assemblies[0];
   const placedMains = ap ? layoutAssemblyMainComponents(ap) : [];
   const bom = generateBOM(assemblies);
   const nozzles = (ap?.components || []).filter((c) => c.type === 'nozzle_manhole');
@@ -209,7 +219,31 @@ export const Drawing2DDialog: React.FC<{
   const handleExportSvg = () => {
     if (!svgRef.current) return;
     const raw = new XMLSerializer().serializeToString(svgRef.current);
-    triggerDownload(`${spec.drawingNo}_2D工程总图.svg`, raw, 'image/svg+xml;charset=utf-8');
+    const suffix =
+      sheetMode === 'unroll' && activeUnrollSheet
+        ? `${activeUnrollSheet.shellName}_展开下料图.svg`
+        : '2D工程总图.svg';
+    triggerDownload(`${spec.drawingNo}_${suffix}`, raw, 'image/svg+xml;charset=utf-8');
+  };
+
+  const handleExportDxf = () => {
+    if (sheetMode === 'unroll') {
+      if (!activeUnrollSheet) return;
+      const dxf = generateShellUnrollDxf(activeUnrollSheet, spec);
+      triggerDownload(
+        `${spec.drawingNo}_${activeUnrollSheet.shellName}_筒体展开图.dxf`,
+        dxf,
+        'application/dxf;charset=utf-8'
+      );
+      return;
+    }
+    if (!ap) return;
+    const dxf = generateAssemblyDrawingDxf(ap, spec, assemblies);
+    triggerDownload(
+      `${spec.drawingNo}_${ap.name}_2D工程总图.dxf`,
+      dxf,
+      'application/dxf;charset=utf-8'
+    );
   };
 
   return (
@@ -235,13 +269,13 @@ export const Drawing2DDialog: React.FC<{
         </div>
 
         {/* Drawing Toolbar */}
-        <div className="px-3 py-1.5 bg-[#eef1f5] border-b border-[#cbd5e1] flex items-center justify-between text-[11.5px] shrink-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[#334155]">图幅布局:</span>
+        <div className="px-3 py-1.5 bg-[#eef1f5] border-b border-[#cbd5e1] flex items-center justify-between gap-2 text-[11px] shrink-0 overflow-x-auto">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[#334155] whitespace-nowrap">图幅:</span>
             <button
               type="button"
               onClick={() => setSheetMode('assembly')}
-              className={`px-2.5 py-0.5 rounded-[2px] border ${
+              className={`px-2 h-[24px] whitespace-nowrap rounded-[2px] border ${
                 sheetMode === 'assembly'
                   ? 'bg-[#2563eb] text-white border-[#1d4ed8]'
                   : 'bg-white text-[#334155] border-[#cbd5e1]'
@@ -252,31 +286,69 @@ export const Drawing2DDialog: React.FC<{
             <button
               type="button"
               onClick={() => setSheetMode('quad_overview')}
-              className={`px-2.5 py-0.5 rounded-[2px] border ${
+              className={`px-2 h-[24px] whitespace-nowrap rounded-[2px] border ${
                 sheetMode === 'quad_overview'
                   ? 'bg-[#2563eb] text-white border-[#1d4ed8]'
                   : 'bg-white text-[#334155] border-[#cbd5e1]'
               }`}
             >
-              多图幅总览 (4图幅)
+              多图幅 (4图)
             </button>
+            <button
+              type="button"
+              onClick={() => setSheetMode('unroll')}
+              className={`px-2 h-[24px] whitespace-nowrap rounded-[2px] border ${
+                sheetMode === 'unroll'
+                  ? 'bg-[#2563eb] text-white border-[#1d4ed8]'
+                  : 'bg-white text-[#334155] border-[#cbd5e1]'
+              }`}
+            >
+              筒体展开图
+            </button>
+            {sheetMode !== 'unroll' && assemblies.length > 1 && (
+              <select
+                aria-label="选择出图装配点"
+                value={ap?.id ?? ''}
+                onChange={(e) => setSelectedAssemblyId(e.target.value)}
+                className="h-[24px] max-w-[160px] px-1.5 text-[11px] bg-white border border-[#94a3b8] rounded-[2px] text-[#0f172a]"
+              >
+                {assemblies.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} ({item.orientation === 'horizontal' ? '卧' : '立'})
+                  </option>
+                ))}
+              </select>
+            )}
+            {sheetMode === 'unroll' && unrollSheets.length > 1 && (
+              <select
+                aria-label="选择展开筒节"
+                value={activeUnrollSheet?.shellId ?? ''}
+                onChange={(e) => setSelectedShellId(e.target.value)}
+                className="h-[24px] max-w-[185px] px-1.5 text-[11px] bg-white border border-[#94a3b8] rounded-[2px] text-[#0f172a]"
+              >
+                {unrollSheets.map((s) => (
+                  <option key={s.shellId} value={s.shellId}>
+                    {s.shellName} (DN{s.innerDiameterMm}×{s.thicknessMm})
+                  </option>
+                ))}
+              </select>
+            )}
             <span className="text-[#cbd5e1] mx-0.5">|</span>
-            <span className="text-[#334155]">配色:</span>
             <button
               type="button"
               onClick={() => setCadDarkTheme(true)}
-              className={`px-2.5 py-0.5 rounded-[2px] border ${
+              className={`px-2 h-[24px] whitespace-nowrap rounded-[2px] border ${
                 cadDarkTheme
                   ? 'bg-[#0f172a] text-[#38bdf8] border-[#38bdf8]'
                   : 'bg-white text-[#334155] border-[#cbd5e1]'
               }`}
             >
-              AutoCAD 黑底
+              CAD黑底
             </button>
             <button
               type="button"
               onClick={() => setCadDarkTheme(false)}
-              className={`px-2.5 py-0.5 rounded-[2px] border ${
+              className={`px-2 h-[24px] whitespace-nowrap rounded-[2px] border ${
                 !cadDarkTheme
                   ? 'bg-[#2563eb] text-white border-[#1d4ed8]'
                   : 'bg-white text-[#334155] border-[#cbd5e1]'
@@ -285,21 +357,32 @@ export const Drawing2DDialog: React.FC<{
               白底蓝图
             </button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0">
+            {(sheetMode !== 'unroll' || activeUnrollSheet) && (
+              <button
+                type="button"
+                onClick={handleExportDxf}
+                title="导出标准分层 DXF 图纸，可直接用 AutoCAD / 中望CAD / 浩辰CAD 打开编辑"
+                className="px-2.5 h-[24px] whitespace-nowrap flex items-center gap-1 bg-[#15803d] hover:bg-[#166534] text-white rounded-[2px]"
+              >
+                <Download className="w-3.5 h-3.5 shrink-0" />
+                <span>{sheetMode === 'unroll' ? '导出展开 DXF' : '导出总图 DXF'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExportSvg}
-              className="px-3 h-[24px] flex items-center gap-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white rounded-[2px]"
+              className="px-2.5 h-[24px] whitespace-nowrap flex items-center gap-1 bg-[#dc2626] hover:bg-[#b91c1c] text-white rounded-[2px]"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>导出 2D 图纸 (.svg)</span>
+              <Download className="w-3.5 h-3.5 shrink-0" />
+              <span>导出 SVG</span>
             </button>
             <button
               type="button"
               onClick={() => window.print()}
-              className="px-3 h-[24px] flex items-center gap-1 bg-white hover:bg-[#f1f5f9] border border-[#94a3b8] rounded-[2px]"
+              className="px-2.5 h-[24px] whitespace-nowrap flex items-center gap-1 bg-white hover:bg-[#f1f5f9] border border-[#94a3b8] rounded-[2px]"
             >
-              <Printer className="w-3.5 h-3.5" />
+              <Printer className="w-3.5 h-3.5 shrink-0" />
               <span>打印</span>
             </button>
           </div>
@@ -1036,6 +1119,314 @@ export const Drawing2DDialog: React.FC<{
                   </text>
                   <text x="380" y="311" fontSize="9.5" fill={strokeDim}>GHPV V2.1 自动出图</text>
                 </g>
+              </g>
+            )}
+
+            {/* ================= SHELL UNROLL / OPENING DEVELOPMENT SHEET (筒体展开下料图, Ep 10) ================= */}
+            {sheetMode === 'unroll' && (
+              <g>
+                <rect x="0" y="0" width="1120" height="720" fill={bgFill} />
+                <rect x="10" y="10" width="1100" height="700" fill="none" stroke={strokeFrame} strokeWidth="1.5" />
+                <rect x="26" y="18" width="1076" height="684" fill="none" stroke={strokeFrame} strokeWidth="2" />
+
+                {activeUnrollSheet ? (() => {
+                  const s = activeUnrollSheet;
+                  const maxDrawW = 550;
+                  const maxDrawH = 420;
+                  const unrollScale = Math.min(
+                    maxDrawW / Math.max(500, s.developedWidthMm),
+                    maxDrawH / Math.max(400, s.lengthMm)
+                  );
+                  const plateW = s.developedWidthMm * unrollScale;
+                  const plateH = s.lengthMm * unrollScale;
+                  const originX = 95 + (maxDrawW - plateW) / 2;
+                  const originY = 128 + (maxDrawH - plateH) / 2;
+                  const strokeWarn = cadDarkTheme ? '#f59e0b' : '#d97706';
+                  const strokePad = cadDarkTheme ? '#a78bfa' : '#7c3aed';
+
+                  return (
+                    <>
+                      {/* Header */}
+                      <text x="44" y="44" fontSize="13.5" fontWeight="700" fill={textFill}>
+                        筒体展开与开孔排板下料图 — {s.shellName} (DN{s.innerDiameterMm} × δ{s.thicknessMm} · L={s.lengthMm} mm)
+                      </text>
+                      <text x="44" y="63" fontSize="10.5" fill={strokeDim}>
+                        中性层展开宽 W = π×(Di+δ) = {s.developedWidthMm.toFixed(1)} mm · 比例 1:{Math.max(1, Math.round(1 / unrollScale))} · 共 {s.openings.length} 处开孔
+                        {s.weldWarningCount > 0 ? ` · ⚠ ${s.weldWarningCount} 处距纵焊缝 < 50mm` : ' · 纵焊缝净距校验合格'}
+                      </text>
+
+                      {/* Top Dimension Line: Developed Width W */}
+                      <line x1={originX} y1={originY - 32} x2={originX} y2={originY - 4} stroke={strokeDim} strokeWidth="0.9" />
+                      <line x1={originX + plateW} y1={originY - 32} x2={originX + plateW} y2={originY - 4} stroke={strokeDim} strokeWidth="0.9" />
+                      <line x1={originX} y1={originY - 22} x2={originX + plateW} y2={originY - 22} stroke={strokeDim} strokeWidth="1.1" />
+                      <text
+                        x={originX + plateW / 2}
+                        y={originY - 27}
+                        textAnchor="middle"
+                        fontSize="10.5"
+                        fontWeight="600"
+                        fill={strokeDim}
+                      >
+                        W = π({s.innerDiameterMm}+{s.thicknessMm}) = {s.developedWidthMm.toFixed(1)} mm
+                      </text>
+
+                      {/* Left Dimension Line: Shell Length L */}
+                      <line x1={originX - 36} y1={originY} x2={originX - 4} y2={originY} stroke={strokeDim} strokeWidth="0.9" />
+                      <line x1={originX - 36} y1={originY + plateH} x2={originX - 4} y2={originY + plateH} stroke={strokeDim} strokeWidth="0.9" />
+                      <line x1={originX - 24} y1={originY} x2={originX - 24} y2={originY + plateH} stroke={strokeDim} strokeWidth="1.1" />
+                      <text
+                        x={originX - 30}
+                        y={originY + plateH / 2}
+                        textAnchor="middle"
+                        fontSize="10.5"
+                        fontWeight="600"
+                        fill={strokeDim}
+                        transform={`rotate(-90 ${originX - 30} ${originY + plateH / 2})`}
+                      >
+                        L = {s.lengthMm} mm
+                      </text>
+
+                      {/* Plate Blank Outline */}
+                      <rect
+                        x={originX}
+                        y={originY}
+                        width={plateW}
+                        height={plateH}
+                        fill={cadDarkTheme ? 'rgba(56,189,248,0.06)' : 'rgba(37,99,235,0.04)'}
+                        stroke={strokeMain}
+                        strokeWidth="2"
+                      />
+
+                      {/* Longitudinal Weld Seam Lines at 0° & 360° */}
+                      <line
+                        x1={originX}
+                        y1={originY - 12}
+                        x2={originX}
+                        y2={originY + plateH + 14}
+                        stroke={strokeCenter}
+                        strokeWidth="1.8"
+                        strokeDasharray="6,3"
+                      />
+                      <line
+                        x1={originX + plateW}
+                        y1={originY - 12}
+                        x2={originX + plateW}
+                        y2={originY + plateH + 14}
+                        stroke={strokeCenter}
+                        strokeWidth="1.8"
+                        strokeDasharray="6,3"
+                      />
+
+                      {/* Azimuth Grid Lines (0°, 90°, 180°, 270°, 360°) */}
+                      {[0, 90, 180, 270, 360].map((deg) => {
+                        const gx = originX + (deg / 360) * plateW;
+                        const isSeam = deg === 0 || deg === 360;
+                        return (
+                          <g key={`az-${deg}`}>
+                            {!isSeam && (
+                              <line
+                                x1={gx}
+                                y1={originY}
+                                x2={gx}
+                                y2={originY + plateH}
+                                stroke={strokeFrame}
+                                strokeWidth="0.7"
+                                strokeDasharray="8,4,2,4"
+                                opacity="0.65"
+                              />
+                            )}
+                            <text
+                              x={gx}
+                              y={originY + plateH + 26}
+                              textAnchor="middle"
+                              fontSize="9.5"
+                              fontWeight={isSeam ? '700' : '500'}
+                              fill={isSeam ? strokeCenter : textFill}
+                            >
+                              {isSeam ? `纵缝 ${deg}°` : `${deg}°`}
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {/* Nozzle Opening Cutouts + Reinforcement Pad Rings */}
+                      {s.openings.map((op) => {
+                        const cx = originX + op.arcXMm * unrollScale;
+                        const cy = originY + plateH - op.axialYMm * unrollScale;
+                        const cutR = Math.max(3.2, (op.cutoutDiaMm / 2) * unrollScale);
+                        const padR = op.padOuterDiaMm
+                          ? Math.max(cutR + 2.5, (op.padOuterDiaMm / 2) * unrollScale)
+                          : null;
+                        const holeStroke = op.weldSeamWarning ? strokeWarn : strokeDim;
+
+                        return (
+                          <g key={`unroll-op-${op.id}`}>
+                            {padR && (
+                              <circle
+                                cx={cx}
+                                cy={cy}
+                                r={padR}
+                                fill="none"
+                                stroke={strokePad}
+                                strokeWidth="1"
+                                strokeDasharray="4,2.5"
+                              />
+                            )}
+                            <circle
+                              cx={cx}
+                              cy={cy}
+                              r={cutR}
+                              fill={cadDarkTheme ? 'rgba(15,23,42,0.85)' : '#ffffff'}
+                              stroke={holeStroke}
+                              strokeWidth="1.6"
+                            />
+                            <line
+                              x1={cx - cutR - 5}
+                              y1={cy}
+                              x2={cx + cutR + 5}
+                              y2={cy}
+                              stroke={strokeCenter}
+                              strokeWidth="0.7"
+                            />
+                            <line
+                              x1={cx}
+                              y1={cy - cutR - 5}
+                              x2={cx}
+                              y2={cy + cutR + 5}
+                              stroke={strokeCenter}
+                              strokeWidth="0.7"
+                            />
+                            <text
+                              x={cx + cutR + 5}
+                              y={cy - 4}
+                              fontSize="9.5"
+                              fontWeight="700"
+                              fill={holeStroke}
+                            >
+                              {op.tag} Ø{op.cutoutDiaMm}
+                            </text>
+                            <text
+                              x={cx + cutR + 5}
+                              y={cy + 8}
+                              fontSize="8.2"
+                              fill={textFill}
+                            >
+                              ({op.arcXMm.toFixed(0)}, {op.axialYMm.toFixed(0)})
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {/* Legend Bar below drawing */}
+                      <g transform="translate(44, 646)">
+                        <line x1="0" y1="0" x2="24" y2="0" stroke={strokeCenter} strokeWidth="1.8" strokeDasharray="6,3" />
+                        <text x="30" y="4" fontSize="9.5" fill={textFill}>纵焊缝 (0°/360°)</text>
+                        <circle cx="152" cy="0" r="5" fill="none" stroke={strokeDim} strokeWidth="1.6" />
+                        <text x="163" y="4" fontSize="9.5" fill={textFill}>接管开孔 (OD+2mm)</text>
+                        <circle cx="294" cy="0" r="5" fill="none" stroke={strokePad} strokeWidth="1.1" strokeDasharray="3,2" />
+                        <text x="305" y="4" fontSize="9.5" fill={textFill}>补强圈外径</text>
+                        <circle cx="388" cy="0" r="5" fill="none" stroke={strokeWarn} strokeWidth="1.6" />
+                        <text x="399" y="4" fontSize="9.5" fill={strokeWarn}>距纵焊缝 &lt; 50mm 警示</text>
+                      </g>
+
+                      {/* Right Panel: Plate Blank Spec Table */}
+                      <g transform="translate(696, 36)">
+                        <rect x="0" y="0" width="388" height="198" fill="none" stroke={strokeFrame} strokeWidth="1.3" />
+                        <rect x="0" y="0" width="388" height="24" fill={cadDarkTheme ? 'rgba(56,189,248,0.14)' : 'rgba(37,99,235,0.08)'} />
+                        <text x="10" y="16" fontSize="10.5" fontWeight="700" fill={strokeDim}>
+                          筒节下料技术参数 (SHELL BLANK SPEC)
+                        </text>
+                        {[
+                          ['筒节名称 / 材质', `${s.shellName} / ${s.material}`],
+                          ['公称内径 Di / 壁厚 δ', `Ø${s.innerDiameterMm} mm / ${s.thicknessMm} mm`],
+                          ['中性层直径 (Di + δ)', `Ø${s.meanDiameterMm} mm`],
+                          ['内周长 π·Di', `${s.innerCircumferenceMm.toFixed(1)} mm`],
+                          ['下料展开宽 W = π(Di+δ)', `${s.developedWidthMm.toFixed(1)} mm`],
+                          ['下料长度 L / 展开面积', `${s.lengthMm} mm / ${s.plateAreaM2.toFixed(3)} m²`],
+                          ['钢板理论净重', `${s.plateWeightKg.toFixed(1)} kg`],
+                        ].map(([k, v], idx) => (
+                          <g key={`spec-row-${idx}`} transform={`translate(0, ${24 + idx * 24.8})`}>
+                            <line x1="0" y1="0" x2="388" y2="0" stroke={strokeFrame} strokeWidth="0.6" />
+                            <line x1="168" y1="0" x2="168" y2="24.8" stroke={strokeFrame} strokeWidth="0.6" />
+                            <text x="8" y="16" fontSize="9.2" fill={strokeDim}>{k}</text>
+                            <text x="176" y="16" fontSize="9.5" fontWeight="600" fill={textFill}>{v}</text>
+                          </g>
+                        ))}
+                      </g>
+
+                      {/* Right Panel: Opening Coordinate Schedule */}
+                      <g transform="translate(696, 250)">
+                        <rect x="0" y="0" width="388" height="334" fill="none" stroke={strokeFrame} strokeWidth="1.3" />
+                        <rect x="0" y="0" width="388" height="24" fill={cadDarkTheme ? 'rgba(56,189,248,0.14)' : 'rgba(37,99,235,0.08)'} />
+                        <text x="10" y="16" fontSize="10.5" fontWeight="700" fill={strokeDim}>
+                          开孔下料坐标表 (CNC / 划线坐标, 单位: mm)
+                        </text>
+                        <g transform="translate(0, 24)">
+                          <line x1="0" y1="0" x2="388" y2="0" stroke={strokeFrame} strokeWidth="0.8" />
+                          <text x="6" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>位号</text>
+                          <text x="48" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>DN</text>
+                          <text x="90" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>开孔Ø</text>
+                          <text x="142" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>方位</text>
+                          <text x="186" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>X(弧长)</text>
+                          <text x="248" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>Y(轴向)</text>
+                          <text x="308" y="15" fontSize="8.8" fontWeight="700" fill={strokeDim}>纵缝校验</text>
+                          <line x1="0" y1="21" x2="388" y2="21" stroke={strokeFrame} strokeWidth="0.8" />
+                        </g>
+                        {s.openings.length === 0 ? (
+                          <text x="194" y="90" textAnchor="middle" fontSize="10" fill={textFill}>
+                            该筒节当前无附属接管/人孔开孔
+                          </text>
+                        ) : (
+                          s.openings.slice(0, 12).map((op, idx) => (
+                            <g key={`op-row-${op.id}`} transform={`translate(0, ${45 + idx * 23})`}>
+                              <text x="6" y="15" fontSize="9" fontWeight="700" fill={op.weldSeamWarning ? strokeWarn : strokeDim}>
+                                {op.tag}
+                              </text>
+                              <text x="48" y="15" fontSize="8.8" fill={textFill}>{op.dn}</text>
+                              <text x="90" y="15" fontSize="8.8" fill={textFill}>{op.cutoutDiaMm}</text>
+                              <text x="142" y="15" fontSize="8.8" fill={textFill}>{op.angleDeg}°</text>
+                              <text x="186" y="15" fontSize="8.8" fill={textFill}>{op.arcXMm.toFixed(1)}</text>
+                              <text x="248" y="15" fontSize="8.8" fill={textFill}>{op.axialYMm.toFixed(1)}</text>
+                              <text
+                                x="308"
+                                y="15"
+                                fontSize="8.5"
+                                fontWeight="600"
+                                fill={op.weldSeamWarning ? strokeWarn : strokeDim}
+                              >
+                                {op.weldSeamWarning ? `⚠ ${op.weldSeamClearanceMm}mm` : '✓ 合格'}
+                              </text>
+                              <line x1="0" y1="23" x2="388" y2="23" stroke={strokeFrame} strokeWidth="0.45" opacity="0.5" />
+                            </g>
+                          ))
+                        )}
+                      </g>
+
+                      {/* Bottom-Right Title Block */}
+                      <g transform="translate(696, 600)">
+                        <rect x="0" y="0" width="388" height="86" fill="none" stroke={strokeFrame} strokeWidth="1.5" />
+                        <line x1="0" y1="28" x2="388" y2="28" stroke={strokeFrame} strokeWidth="0.8" />
+                        <line x1="0" y1="57" x2="388" y2="57" stroke={strokeFrame} strokeWidth="0.8" />
+                        <text x="194" y="19" textAnchor="middle" fontSize="11" fontWeight="700" fill={textFill}>
+                          {spec.companyName} — {spec.vesselTag} {spec.vesselName}
+                        </text>
+                        <text x="10" y="46" fontSize="9.5" fill={textFill}>图名: {s.shellName}展开排板图</text>
+                        <text x="230" y="46" fontSize="9.5" fill={strokeDim}>图号: {spec.drawingNo}-UNROLL</text>
+                        <text x="10" y="75" fontSize="9" fill={textFill}>标准: GB/T 150 · NB/T 47015</text>
+                        <text x="230" y="75" fontSize="9" fill={strokeDim}>支持 1:1 DXF 导出</text>
+                      </g>
+                    </>
+                  );
+                })() : (
+                  <g>
+                    <text x="560" y="340" textAnchor="middle" fontSize="15" fontWeight="700" fill={textFill}>
+                      当前模型不含直筒体 (如纯球形储罐)
+                    </text>
+                    <text x="560" y="370" textAnchor="middle" fontSize="11.5" fill={strokeDim}>
+                      请切换至塔器、换热器、平底锥壳立式容器或卧式容器，或向当前模型添加筒体后查看展开图
+                    </text>
+                  </g>
+                )}
               </g>
             )}
           </svg>

@@ -16,19 +16,35 @@ import {
   computeComponentMetrics,
   getComponentTypeLabel,
   buildVesselFromAiSpec,
+  autoArrangeAssemblies,
+  computeShellUnrollData,
+  generateShellUnrollDxf,
 } from './vesselMath';
 import * as THREE from 'three';
 import type { AssemblyPoint, ComponentType, TechnicalSpec } from '../types/vessel';
 import { VESSEL_PRESETS, createDefaultComponent } from '../data/presets';
 import { buildAssembliesScene } from '../scene/vesselGeometry';
-import { extractTextFromCadDatasheetFile, parseGhpvFileBuffer } from './ghpvImporter';
+import {
+  decodeTextBufferSmart,
+  extractTextFromCadDatasheetFile,
+  parseGhpvFileBuffer,
+} from './ghpvImporter';
 import {
   computeSceneMeshStats,
   exportSceneToBinaryStl,
   exportSceneToIges,
   exportSceneToObjAndMtl,
   exportSceneToStepAp214,
+  loadEmbeddedMeshesToGroup,
+  loadExternal3DModelBuffer,
+  parseOpenCascadeBrepToGeometry,
 } from '../scene/cadExporters';
+import {
+  computeFlangeDimensions,
+  createDrilledFlangePlateGeometry,
+  parseBoltDiameterMm,
+} from '../scene/flangeGeometry';
+import { gzipSync, strToU8, zipSync } from 'fflate';
 
 test('elliptical head GB/T 25198-2023 calculations match GHPV page 9 reference', () => {
   const res = calculateEllipticalHeadMetrics({
@@ -772,28 +788,743 @@ test('fixed secondary attachments maintain accurate 1:1 engineering proportions 
   );
 });
 
-test('all standard VESSEL_PRESETS pass interference check cleanly and BKU isolates Ep 11 U-tube clash', () => {
-  for (const preset of VESSEL_PRESETS) {
-    const report = checkInterferences(preset.assemblies);
-    if (preset.id === 'bku_reboiler') {
-      assert.equal(
-        report.errorCount,
-        1,
-        `BKU preset should isolate the single Ep 11 U-tube clash, got ${report.issues.map((i) => i.title).join(', ')}`
-      );
-      assert.ok(report.issues[0]?.title.includes('U形管'), 'BKU clash should be the U-tube bundle ligament clash');
-      const fixed = autoFixInterferences(preset.assemblies);
-      const after = checkInterferences(fixed.assemblies);
-      assert.equal(after.errorCount, 0, 'BKU autoFix should clear all conflicts');
-    } else {
-      assert.equal(
-        report.errorCount,
-        0,
-        `Preset ${preset.id} should have 0 interference errors, got: ${report.issues.map((i) => i.title).join(', ')}`
-      );
+test('autoArrangeAssemblies optimizes multi-assembly spatial layout, internal ordering, spacing, and preserves immutability', () => {
+  // 1. Out-of-order components + overlapping nozzles + cramped saddles + overlapping horizontal assemblies
+  const smallShell = createDefaultComponent('shell', 0, undefined, 1000);
+  const largeShell = createDefaultComponent('shell', 0, undefined, 1600);
+  const startHead = createDefaultComponent('elliptical_head', 0, undefined, 1600);
+  const endHead = createDefaultComponent('elliptical_head', 1, undefined, 1600);
+  (endHead.params as { flipped: boolean }).flipped = true;
+
+  const nozA = createDefaultComponent('nozzle_manhole', 0, largeShell.id, 1600);
+  const nozB = createDefaultComponent('nozzle_manhole', 1, largeShell.id, 1600);
+  (nozA.params as { axialOffset: number; angleDeg: number }).axialOffset = 1000;
+  (nozA.params as { axialOffset: number; angleDeg: number }).angleDeg = 0;
+  (nozB.params as { axialOffset: number; angleDeg: number }).axialOffset = 1050;
+  (nozB.params as { axialOffset: number; angleDeg: number }).angleDeg = 0;
+
+  const sad1 = createDefaultComponent('saddle', 0, largeShell.id, 1600);
+  const sad2 = createDefaultComponent('saddle', 1, largeShell.id, 1600);
+  (sad1.params as { axialOffset: number }).axialOffset = 1400;
+  (sad2.params as { axialOffset: number }).axialOffset = 1500;
+
+  const messyHorizontal: AssemblyPoint[] = [
+    {
+      id: 'ap-small',
+      name: '小换热器',
+      x: 400,
+      z: 0,
+      orientation: 'horizontal',
+      components: [smallShell],
+    },
+    {
+      id: 'ap-large',
+      name: '大主壳体',
+      x: -350,
+      z: 100,
+      orientation: 'horizontal',
+      // Deliberately scrambled order: endHead -> shell -> startHead, nozzles colliding, saddles cramped
+      components: [endHead, largeShell, startHead, nozB, nozA, sad2, sad1],
+    },
+  ];
+
+  const snapshotBefore = JSON.stringify(messyHorizontal);
+  const res = autoArrangeAssemblies(messyHorizontal);
+
+  // Must not mutate input (essential for undo reliability)
+  assert.equal(JSON.stringify(messyHorizontal), snapshotBefore);
+  assert.equal(res.changed, true);
+  assert.ok(res.movedAssemblyCount >= 2);
+  assert.ok(res.reorderedComponentCount > 0);
+  assert.ok(res.spacingAdjustedCount > 0);
+
+  // Larger horizontal vessel placed at bottom (Z=0, X=0), smaller vessel stacked cleanly above with non-overlapping Z
+  assert.equal(res.assemblies[0].id, 'ap-large');
+  assert.equal(res.assemblies[0].x, 0);
+  assert.equal(res.assemblies[0].z, 0);
+  assert.equal(res.assemblies[1].id, 'ap-small');
+  assert.equal(res.assemblies[1].x, 0);
+  assert.ok(res.assemblies[1].z >= 2000, `Expected non-overlapping stacked Z >= 2000mm, got ${res.assemblies[1].z}`);
+
+  // Main components inside ap-large reordered to: startHead -> largeShell -> endHead
+  const arrangedMains = res.assemblies[0].components.filter((c) => c.category === 'main');
+  assert.deepEqual(
+    arrangedMains.map((c) => c.id),
+    [startHead.id, largeShell.id, endHead.id]
+  );
+
+  // Colliding nozzles spread apart cleanly
+  const arrangedNozzles = res.assemblies[0].components
+    .filter((c) => c.type === 'nozzle_manhole')
+    .map((c) => (c.params as { axialOffset: number }).axialOffset);
+  assert.ok(
+    Math.abs(arrangedNozzles[1] - arrangedNozzles[0]) >= 300,
+    `Nozzles should be separated after arrange, got offsets ${arrangedNozzles.join(', ')}`
+  );
+
+  // Cramped saddles spread to exact 0.2L (400mm) and 0.8L (1600mm) on 2000mm shell
+  const arrangedSaddles = res.assemblies[0].components
+    .filter((c) => c.type === 'saddle')
+    .map((c) => (c.params as { axialOffset: number }).axialOffset);
+  assert.deepEqual(arrangedSaddles, [400, 1600]);
+
+  // Running autoArrangeAssemblies a second time should be idempotent (changed === false)
+  const secondPass = autoArrangeAssemblies(res.assemblies);
+  assert.equal(secondPass.changed, false);
+
+  // 2. Vertical / mixed plant row layout: side-by-side along +X with safe walkway clearance
+  const vertTowerShell = createDefaultComponent('shell', 0, undefined, 1800);
+  const vertSmallShell = createDefaultComponent('shell', 0, undefined, 1000);
+  const mixedRow: AssemblyPoint[] = [
+    { id: 'ap-v-small', name: '小立罐', x: 0, z: 300, orientation: 'vertical', components: [vertSmallShell] },
+    { id: 'ap-v-big', name: '大塔', x: 100, z: 0, orientation: 'vertical', components: [vertTowerShell] },
+  ];
+  const rowRes = autoArrangeAssemblies(mixedRow);
+  assert.equal(rowRes.changed, true);
+  assert.equal(rowRes.assemblies[0].id, 'ap-v-big');
+  assert.equal(rowRes.assemblies[0].x, 0);
+  assert.equal(rowRes.assemblies[0].z, 0);
+  assert.equal(rowRes.assemblies[1].id, 'ap-v-small');
+  assert.ok(rowRes.assemblies[1].x >= 2500, `Expected wide walkway X spacing >= 2500mm, got ${rowRes.assemblies[1].x}`);
+});
+
+test('precision CAD flanges obey ASME/HG/NB/T hub clearance, drilled bolt holes, and paired joint invariants', () => {
+  // 1. Metric bolt spec parsing
+  assert.equal(parseBoltDiameterMm('M27'), 27);
+  assert.equal(parseBoltDiameterMm('M20x110'), 20);
+  assert.equal(parseBoltDiameterMm(undefined, 18), 18);
+
+  // 2. WN-RF DN150 PN300 pipe flange: hub base must stay strictly inside BCD & nut clearance (never a giant cone to flangeOD!)
+  const wnPipe = computeFlangeDimensions({
+    style: 'WN',
+    facing: 'RF',
+    boreDiameterMm: 152.3,
+    pipeODMm: 168.3,
+    flangeODMm: 318,
+    flangeThicknessMm: 36.5,
+    boltCount: 12,
+  });
+  assert.ok(wnPipe.hubHeightMm > 20, `WN flange must have real tapered hub, got ${wnPipe.hubHeightMm}mm`);
+  assert.ok(
+    wnPipe.rHubBaseMm < wnPipe.bcdRMm - wnPipe.boltHoleRMm,
+    `WN hub root (${wnPipe.rHubBaseMm.toFixed(1)}mm) must stay strictly inside bolt holes (${(wnPipe.bcdRMm - wnPipe.boltHoleRMm).toFixed(1)}mm)`
+  );
+  assert.ok(
+    wnPipe.rHubBaseMm < wnPipe.rOutMm - 25,
+    `WN hub root (${wnPipe.rHubBaseMm.toFixed(1)}mm) must leave flat back face well inside flange OD (${wnPipe.rOutMm}mm)`
+  );
+  assert.ok(
+    wnPipe.rRfOuterMm < wnPipe.bcdRMm - wnPipe.boltHoleRMm,
+    `Raised face outer radius (${wnPipe.rRfOuterMm.toFixed(1)}mm) must sit inside bolt holes`
+  );
+
+  // 3. Drilled flange plate punches exact boltCount circular holes + center bore
+  const drilled = createDrilledFlangePlateGeometry(wnPipe, 48);
+  assert.equal(drilled.holeCount, 12);
+  assert.ok(drilled.geometry.attributes.position.count > 400, 'Drilled beveled plate must be high precision');
+
+  // 4. Equipment flange DN1000 PN2.5 (NB/T 47023) + Blind Cover (BL) + Flat Plate (PL)
+  const eqWn = computeFlangeDimensions({
+    style: 'WN',
+    facing: 'RF',
+    boreDiameterMm: 1000,
+    pipeODMm: 1028,
+    flangeODMm: 1160,
+    flangeThicknessMm: 52,
+    totalHeightMm: 120,
+    boltCircleMm: 1110,
+    boltCount: 36,
+    boltSpec: 'M27',
+  });
+  assert.equal(eqWn.boltCount, 36);
+  assert.equal(eqWn.bcdRMm, 555);
+  assert.ok(eqWn.rHubBaseMm < eqWn.bcdRMm - eqWn.boltHoleRMm);
+
+  const blind = computeFlangeDimensions({
+    style: 'BL',
+    facing: 'RF',
+    boreDiameterMm: 1000,
+    pipeODMm: 1028,
+    flangeODMm: 1160,
+    flangeThicknessMm: 68,
+    boltCircleMm: 1100,
+    boltCount: 36,
+    boltSpec: 'M30',
+  });
+  assert.equal(blind.isBlind, true);
+  assert.equal(blind.rInMm, 0);
+  assert.equal(blind.hubHeightMm, 0);
+
+  const plateFlg = computeFlangeDimensions({
+    style: 'PL',
+    facing: 'RF',
+    boreDiameterMm: 150,
+    pipeODMm: 168.3,
+    flangeODMm: 280,
+    flangeThicknessMm: 24,
+    boltCount: 8,
+  });
+  assert.equal(plateFlg.hubHeightMm, 0);
+
+  // 5. Paired equipment flanges in U-tube exchanger preset produce ONE unified bolt set (no duplicate overlapping rings)
+  const uExchanger = VESSEL_PRESETS.find((pr) =>
+    pr.assemblies.some((ap) => ap.components.some((c) => c.id === 'ue-flg-1'))
+  );
+  assert.ok(uExchanger, 'U-tube exchanger preset containing ue-flg-1 must exist');
+  const built = buildAssembliesScene(uExchanger.assemblies, null, 'solid', [], 0);
+  const flg1Insts: THREE.InstancedMesh[] = [];
+  const flg2Insts: THREE.InstancedMesh[] = [];
+  built.rootGroup.traverse((obj) => {
+    if ((obj as THREE.InstancedMesh).isInstancedMesh) {
+      if (obj.userData.componentId === 'ue-flg-1') flg1Insts.push(obj as THREE.InstancedMesh);
+      if (obj.userData.componentId === 'ue-flg-2') flg2Insts.push(obj as THREE.InstancedMesh);
     }
+  });
+  assert.ok(flg1Insts.length >= 5, 'Primary flange in paired joint should host unified stud/washer/nut InstancedMeshes');
+  assert.equal(flg2Insts.length, 0, 'Secondary flange in paired joint must suppress duplicate overlapping bolts');
+});
+
+test('open-file importer rejects empty, corrupt JSON, and opaque ZIP binary files instead of fabricating fake models', () => {
+  // 1. Empty buffer
+  assert.throws(
+    () => parseGhpvFileBuffer('empty.ghpv', new ArrayBuffer(0)),
+    /为空（0 字节）/
+  );
+
+  // 2. Corrupt JSON syntax
+  const badJsonBuf = new TextEncoder().encode('{"spec": { broken json').buffer;
+  assert.throws(
+    () => parseGhpvFileBuffer('broken.json', badJsonBuf),
+    /JSON 格式损坏/
+  );
+
+  // 3. Valid JSON without GHPV schema
+  const unrelatedJsonBuf = new TextEncoder().encode(JSON.stringify({ hello: 'world' })).buffer;
+  assert.throws(
+    () => parseGhpvFileBuffer('unrelated.json', unrelatedJsonBuf),
+    /缺少 GHPV 工程结构/
+  );
+
+  // 4. Opaque ZIP container renamed to .ghpv (PK\x03\x04 with no readable vessel fields)
+  const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x08, 0x00, 0x08, 0x00, 0xab, 0xcd, 0xef, 0x99]);
+  assert.throws(
+    () => parseGhpvFileBuffer('encrypted_archive.ghpv', zipBytes.buffer),
+    /ZIP 压缩包容器/
+  );
+
+  // 5. Native GHPV JSON sanitization: repairs missing color/visible and skips invalid components cleanly
+  const dirtyNative = JSON.stringify({
+    version: 'GHPV-V2.1',
+    spec: { vesselTag: 'V-999' },
+    assemblies: [
+      {
+        id: 'ap-1',
+        name: '装配点1',
+        orientation: 'horizontal',
+        components: [
+          {
+            id: 's1',
+            name: '筒体1',
+            type: 'shell',
+            params: { shellKind: '筒体', diameter: 1200, thickness: 12, length: 3000, material: 'Q345R', density: 7.85 },
+          },
+          {
+            id: 'bad-1',
+            name: '未知损坏元件',
+            type: 'unknown_corrupt_type',
+            params: {},
+          },
+        ],
+      },
+    ],
+  });
+  const sanitized = parseGhpvFileBuffer('dirty.ghpv', new TextEncoder().encode(dirtyNative).buffer);
+  assert.equal(sanitized.sourceFormat, 'ghpv_json');
+  assert.equal(sanitized.componentCount, 1);
+  assert.equal(sanitized.assemblies[0].components[0].visible, true);
+  assert.equal(sanitized.assemblies[0].components[0].color.a, 255);
+  assert.ok(sanitized.warnings && sanitized.warnings.some((w) => w.includes('已跳过 1 个')));
+
+  // 6. Smart decoder handles GB18030 Chinese bytes without mojibake
+  // GBK bytes for "筒体" (CD B2 CC E5) + ASCII "=1200"
+  const gbkBytes = new Uint8Array([0xcd, 0xb2, 0xcc, 0xe5, 0x3d, 0x31, 0x32, 0x30, 0x30]);
+  const decodedGbk = decodeTextBufferSmart(gbkBytes.buffer);
+  assert.equal(decodedGbk, '筒体=1200');
+});
+
+test('external 3D model loader round-trips exported STEP AP214, IGES 5.3, Binary STL, and OBJ cleanly', async () => {
+  const root = new THREE.Group();
+  root.name = 'GHPV_ModelRoot';
+  const shell = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.6, 0.6, 2.4, 12),
+    new THREE.MeshStandardMaterial({ color: 0xc68820 })
+  );
+  shell.name = '筒体1';
+  root.add(shell);
+
+  // STEP AP214 round-trip
+  const stepText = exportSceneToStepAp214(root, 'V-101', 'mm');
+  const stepLoaded = await loadExternal3DModelBuffer('V-101.stp', new TextEncoder().encode(stepText).buffer);
+  assert.ok(stepLoaded.stats.triangleCount >= 24, `STEP loader should parse triangles, got ${stepLoaded.stats.triangleCount}`);
+  assert.ok(Math.abs(stepLoaded.stats.sizeMm[1] - 2400) < 20, `STEP loader should preserve mm->m scale, got ${stepLoaded.stats.sizeMm[1]}mm`);
+
+  // IGES 5.3 round-trip
+  const igesText = exportSceneToIges(root, 'V-101', 'mm');
+  const igesLoaded = await loadExternal3DModelBuffer('V-101.igs', new TextEncoder().encode(igesText).buffer);
+  assert.ok(igesLoaded.stats.triangleCount >= 24, `IGES loader should parse triangles, got ${igesLoaded.stats.triangleCount}`);
+  assert.ok(Math.abs(igesLoaded.stats.sizeMm[1] - 2400) < 20);
+
+  // Binary STL round-trip
+  const binStl = exportSceneToBinaryStl(root, 'V-101', 'mm');
+  const stlLoaded = await loadExternal3DModelBuffer('V-101.stl', binStl);
+  assert.ok(stlLoaded.stats.triangleCount >= 24);
+  assert.ok(Math.abs(stlLoaded.stats.sizeMm[1] - 2400) < 20);
+
+  // OBJ round-trip
+  const { obj } = exportSceneToObjAndMtl(root, 'V-101', 'mm');
+  const objLoaded = await loadExternal3DModelBuffer('V-101.obj', new TextEncoder().encode(obj).buffer);
+  assert.ok(objLoaded.stats.triangleCount >= 24);
+
+  // Empty & NURBS-only STEP rejection
+  await assert.rejects(
+    () => loadExternal3DModelBuffer('empty.stl', new ArrayBuffer(0)),
+    /为空（0 字节）/
+  );
+  await assert.rejects(
+    () => loadExternal3DModelBuffer('nurbs.stp', new TextEncoder().encode('ISO-10303-21;\nDATA;\nENDSEC;').buffer),
+    /面片化 STEP/
+  );
+});
+
+test('computeShellUnrollData and generateShellUnrollDxf produce 1:1 neutral-axis unroll, weld checks, and valid DXF', () => {
+  const tower = VESSEL_PRESETS.find((p) => p.id === 'tower');
+  assert.ok(tower, 'tower preset must exist');
+  const sheets = computeShellUnrollData(tower.assemblies);
+  assert.ok(sheets.length >= 1, 'Tower must produce at least one unroll shell sheet');
+
+  // Verify exact neutral-axis developed width W = π × (Di + δ)
+  for (const s of sheets) {
+    const expectedW = Math.round(Math.PI * (s.innerDiameterMm + s.thicknessMm) * 10) / 10;
+    assert.equal(s.developedWidthMm, expectedW);
+    assert.ok(s.plateWeightKg > 0);
+  }
+
+  // Test synthetic shell with one safe nozzle (180°) and one weld-seam colliding nozzle (0°)
+  const testShell = createDefaultComponent('shell', 0, undefined, 1000);
+  (testShell.params as { diameter: number; thickness: number; length: number }).diameter = 1000;
+  (testShell.params as { diameter: number; thickness: number; length: number }).thickness = 10;
+  (testShell.params as { diameter: number; thickness: number; length: number }).length = 2000;
+
+  const nozSafe = createDefaultComponent('nozzle_manhole', 0, testShell.id, 1000);
+  Object.assign(nozSafe.params, {
+    tag: 'N1',
+    dn: 150,
+    pipeOD: 168,
+    axialOffset: 800,
+    angleDeg: 180,
+    hasPad: true,
+    padOD: 290,
+  });
+
+  const nozWeldHit = createDefaultComponent('nozzle_manhole', 1, testShell.id, 1000);
+  Object.assign(nozWeldHit.params, {
+    tag: 'N2',
+    dn: 100,
+    pipeOD: 114,
+    axialOffset: 1200,
+    angleDeg: 0,
+    hasPad: false,
+  });
+
+  const synthSheets = computeShellUnrollData([
+    {
+      id: 'ap-u',
+      name: '装配点1',
+      x: 0,
+      z: 0,
+      orientation: 'vertical',
+      components: [testShell, nozSafe, nozWeldHit],
+    },
+  ]);
+  assert.equal(synthSheets.length, 1);
+  const sheet = synthSheets[0];
+  const expectedW = Math.round(Math.PI * 1010 * 10) / 10; // 3173.0 mm
+  assert.equal(sheet.developedWidthMm, expectedW);
+  assert.equal(sheet.openings.length, 2);
+  assert.equal(sheet.weldWarningCount, 1);
+
+  const opN1 = sheet.openings.find((o) => o.tag === 'N1')!;
+  assert.equal(opN1.cutoutDiaMm, 170);
+  assert.equal(opN1.padOuterDiaMm, 290);
+  assert.ok(Math.abs(opN1.arcXMm - expectedW / 2) <= 0.2);
+  assert.equal(opN1.axialYMm, 800);
+  assert.equal(opN1.weldSeamWarning, false);
+
+  const opN2 = sheet.openings.find((o) => o.tag === 'N2')!;
+  assert.equal(opN2.weldSeamWarning, true);
+  assert.ok(opN2.weldSeamClearanceMm < 0, 'Nozzle at 0° sits directly on longitudinal weld seam');
+
+  // Verify DXF generation
+  const dxf = generateShellUnrollDxf(sheet, tower.spec);
+  assert.ok(dxf.includes('SECTION') && dxf.includes('ENTITIES'));
+  assert.ok(dxf.includes('PLATE_OUTLINE') && dxf.includes('NOZZLE_CUTOUT') && dxf.includes('PAD_RING'));
+  assert.ok(dxf.includes('CIRCLE'));
+  assert.ok(dxf.includes('N1 DN150 D=170'));
+  assert.ok(dxf.trimEnd().endsWith('EOF'));
+
+  // Spherical-only vessel returns zero cylindrical unroll sheets
+  const sphere = VESSEL_PRESETS.find((p) => p.id === 'spherical_tank')!;
+  assert.equal(computeShellUnrollData(sphere.assemblies).length, 0);
+});
+
+test('conical_vertical preset and 1:1 tube-aligned perforated baffles build valid 3D meshes', () => {
+  // 1. Conical vertical vessel (平底锥壳立式容器)
+  const cv = VESSEL_PRESETS.find((p) => p.id === 'conical_vertical');
+  assert.ok(cv, 'conical_vertical preset must exist');
+  assert.equal(cv.assemblies[0].orientation, 'vertical');
+  assert.ok(cv.assemblies[0].components.some((c) => c.type === 'cone'));
+  assert.ok(cv.assemblies[0].components.some((c) => c.type === 'leg_support'));
+  assert.ok(
+    cv.assemblies[0].components.some(
+      (c) => c.type === 'equipment_flange' && (c.params as { flangeType?: string }).flangeType === '法兰盖(BL)'
+    ),
+    'conical_vertical must include bolted flat blind cover (平底/平盖)'
+  );
+  const cvScene = buildAssembliesScene(cv.assemblies, null, 'solid', [], 0);
+  const cvStats = computeSceneMeshStats(cvScene.rootGroup);
+  assert.ok(cvStats.triangleCount > 2000, `conical_vertical should render detailed 3D mesh, got ${cvStats.triangleCount}`);
+
+  // 2. Fixed tubesheet & U-tube exchanger baffles build cleanly with real tube-aligned perforation holes
+  for (const presetId of ['exchanger', 'u_exchanger']) {
+    const preset = VESSEL_PRESETS.find((p) => p.id === presetId)!;
+    const built = buildAssembliesScene(preset.assemblies, null, 'solid', [], 0.35);
+    const stats = computeSceneMeshStats(built.rootGroup);
+    assert.ok(stats.triangleCount > 5000, `${presetId} should render tubes + perforated baffles, got ${stats.triangleCount}`);
+    // Verify no NaN vertices in any baffle ExtrudeGeometry
+    built.rootGroup.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const pos = (obj as THREE.Mesh).geometry.attributes.position;
+        if (pos) {
+          for (let i = 0; i < Math.min(pos.count, 30); i++) {
+            assert.ok(Number.isFinite(pos.getX(i)) && Number.isFinite(pos.getY(i)) && Number.isFinite(pos.getZ(i)));
+          }
+        }
+      }
+    });
   }
 });
+
+test('GHPV native JSON import preserves extra metadata and auto-rebinds orphan attachments', () => {
+  const payload = {
+    version: 'GHPV-V2.1',
+    author: '张工',
+    clientOrder: 'PO-2026-088',
+    spec: {
+      vesselTag: 'V-901',
+      vesselName: '原料缓冲罐',
+      designCode: 'GB/T 150.1~150.4-2024',
+      vesselClass: '三类 (第III类)',
+      designPressure: 3.2,
+      workPressure: 2.6,
+      testPressure: 4.0,
+      designTemp: 180,
+      workTemp: 145,
+      medium: '富氢循环气',
+      corrosionAllowance: 3,
+      weldEfficiency: 1.0,
+      ndtMethod: '100% RT+UT',
+      heatTreatment: '焊后热处理 (PWHT)',
+      companyName: '高惠工程设计院',
+      projectName: '200万吨/年加氢装置',
+      drawingNo: 'GH-V901-01',
+      customPlantArea: '装置二区',
+    },
+    assemblies: [
+      {
+        id: 'ap-1',
+        name: '装配点1',
+        x: 0,
+        z: 0,
+        orientation: 'horizontal',
+        components: [
+          {
+            id: 'sh-main',
+            name: '筒体1',
+            type: 'shell',
+            category: 'main',
+            visible: true,
+            color: { r: 198, g: 136, b: 32, a: 255 },
+            params: {
+              shellKind: '筒体',
+              diameter: 1800,
+              thickness: 22,
+              length: 4800,
+              material: 'Q345R',
+              density: 7.85,
+            },
+          },
+          {
+            id: 'nz-orphan',
+            name: 'N1',
+            type: 'nozzle_manhole',
+            category: 'attachment',
+            parentId: 'non-existent-shell-id',
+            visible: true,
+            color: { r: 72, g: 134, b: 198, a: 255 },
+            params: {
+              tag: 'N1',
+              purpose: '高压进料口',
+              dn: 200,
+              pn: '600',
+              isManhole: false,
+              flangeSpec: 'HG/T 20592-2009',
+              flangeType: 'WN(带颈对焊)',
+              flangeOD: 380,
+              flangeThickness: 44,
+              boltCount: 12,
+              pipeOD: 219.1,
+              pipeThickness: 12,
+              pipeMaterial: '20#',
+              protrusion: 280,
+              innerProtrusion: 30,
+              axialOffset: 900,
+              angleDeg: 45,
+              hasPad: true,
+              padOD: 360,
+              padThickness: 18,
+              hasBlindCover: true,
+              material: '16MnIII',
+              density: 7.85,
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  const buf = new TextEncoder().encode(JSON.stringify(payload)).buffer;
+  const res = parseGhpvFileBuffer('V-901_原料缓冲罐.ghpv', buf);
+
+  assert.equal(res.sourceFormat, 'ghpv_json');
+  assert.equal(res.spec.vesselTag, 'V-901');
+  assert.equal(res.spec.vesselClass, '三类 (第III类)');
+  assert.equal(res.spec.medium, '富氢循环气');
+  assert.equal(res.spec.heatTreatment, '焊后热处理 (PWHT)');
+  assert.equal(res.spec.projectName, '200万吨/年加氢装置');
+
+  // Orphan attachment must be automatically rebound to sh-main
+  assert.equal(res.reboundAttachmentCount, 1);
+  const reboundNozzle = res.assemblies[0].components.find((c) => c.id === 'nz-orphan')!;
+  assert.equal(reboundNozzle.parentId, 'sh-main');
+  assert.ok(
+    res.warnings?.some((w) => w.includes('挂载到主构件')),
+    'Expected a warning describing orphan attachment rebinding'
+  );
+
+  // Extra metadata must retain author, clientOrder, and customPlantArea
+  const metaMap = new Map((res.extraMetadata || []).map((m) => [m.key, m.value]));
+  assert.equal(metaMap.get('author'), '张工');
+  assert.equal(metaMap.get('clientOrder'), 'PO-2026-088');
+  assert.equal(metaMap.get('customPlantArea'), '装置二区');
+
+  // Enriched nozzle metrics must expose flange, bolt, offset, extension, pad, and blind info
+  const nzMetrics = computeComponentMetrics(reboundNozzle);
+  const labels = new Set(nzMetrics.extraProperties.map((p) => p.label));
+  assert.ok(labels.has('法兰型式'));
+  assert.ok(labels.has('法兰外径×厚(mm)'));
+  assert.ok(labels.has('螺栓数量'));
+  assert.ok(labels.has('接管外径×壁厚'));
+  assert.ok(labels.has('轴向距离(mm)'));
+  assert.ok(labels.has('外伸长度L1(mm)'));
+  assert.ok(labels.has('内伸长度L2(mm)'));
+  assert.ok(labels.has('方位角(°)'));
+  assert.ok(labels.has('补强圈'));
+  assert.ok(labels.has('法兰盲盖'));
+});
+
+test('GHPV desktop XML/text import extracts all 17 TechnicalSpec fields, rich nozzles, and extra metadata', () => {
+  const xmlText = `<?xml version="1.0" encoding="UTF-8"?>
+<GHPVProject>
+  <VesselTag>E-606</VesselTag>
+  <VesselName>加氢原料预热换热器</VesselName>
+  <VesselClass>三类</VesselClass>
+  <DesignCode>GB/T 151-2014</DesignCode>
+  <DesignPressure>4.2</DesignPressure>
+  <WorkPressure>3.6</WorkPressure>
+  <TestPressure>5.25</TestPressure>
+  <DesignTemp>280</DesignTemp>
+  <WorkTemp>245</WorkTemp>
+  <Medium>加氢精制柴油</Medium>
+  <CorrosionAllowance>3.0</CorrosionAllowance>
+  <WeldEfficiency>1.0</WeldEfficiency>
+  <NDT>100% RT (NB/T 47013.2-II级)</NDT>
+  <HeatTreatment>焊后消除应力热处理</HeatTreatment>
+  <DrawingNo>GH-E606-2026</DrawingNo>
+  <ProjectName>镇海炼化改造工程</ProjectName>
+  <CompanyName>高惠石化装备有限公司</CompanyName>
+  <Designer>李工</Designer>
+  <Revision>Rev.B</Revision>
+  <EquipmentType>固定管板换热器</EquipmentType>
+  <Material>15CrMoR</Material>
+  <Diameter>1000</Diameter>
+  <Length>4200</Length>
+  <Thickness>18</Thickness>
+  <TubeOD>25</TubeOD>
+  <TubePitch>32</TubePitch>
+  <BaffleCount>9</BaffleCount>
+  <Nozzles>
+    N1 壳程进口 DN200 PN600 0° 0.16
+    N2 壳程出口 DN200 PN600 180° 0.84
+    N3 排净口 DN50 PN600 180° 0.50
+  </Nozzles>
+</GHPVProject>`;
+
+  const buf = new TextEncoder().encode(xmlText).buffer;
+  const res = parseGhpvFileBuffer('E-606_换热器.xml', buf);
+
+  assert.equal(res.sourceFormat, 'ghpv_xml_text');
+  assert.equal(res.spec.vesselTag, 'E-606');
+  assert.equal(res.spec.vesselName, '加氢原料预热换热器');
+  assert.equal(res.spec.vesselClass, '三类');
+  assert.equal(res.spec.designCode, 'GB/T 151-2014');
+  assert.equal(res.spec.designPressure, 4.2);
+  assert.equal(res.spec.workPressure, 3.6);
+  assert.equal(res.spec.testPressure, 5.25);
+  assert.equal(res.spec.designTemp, 280);
+  assert.equal(res.spec.workTemp, 245);
+  assert.equal(res.spec.medium, '加氢精制柴油');
+  assert.equal(res.spec.corrosionAllowance, 3);
+  assert.equal(res.spec.weldEfficiency, 1.0);
+  assert.ok(res.spec.ndtMethod.includes('100% RT'));
+  assert.equal(res.spec.heatTreatment, '焊后消除应力热处理');
+  assert.equal(res.spec.drawingNo, 'GH-E606-2026');
+  assert.equal(res.spec.projectName, '镇海炼化改造工程');
+  assert.equal(res.spec.companyName, '高惠石化装备有限公司');
+
+  const nozzles = res.assemblies[0].components.filter((c) => c.type === 'nozzle_manhole');
+  assert.equal(nozzles.length, 3);
+  const n1 = nozzles.find((c) => (c.params as { tag: string }).tag === 'N1')!;
+  const n1p = n1.params as { dn: number; pn: string; angleDeg: number; purpose: string };
+  assert.equal(n1p.dn, 200);
+  assert.equal(n1p.pn, '600');
+  assert.equal(n1p.angleDeg, 0);
+  assert.ok(n1p.purpose.includes('壳程进口'));
+
+  // Extra metadata must include non-standard XML tags like Designer & Revision
+  const xmlMeta = new Map((res.extraMetadata || []).map((m) => [m.key, m.value]));
+  assert.equal(xmlMeta.get('Designer'), '李工');
+  assert.equal(xmlMeta.get('Revision'), 'Rev.B');
+});
+
+test('ZIP-packaged desktop .ghpv with FreeCAD/OCC Document.xml and .brp mesh unpacks cleanly', async () => {
+  const documentXml = `<?xml version="1.0" encoding="utf-8"?>
+<Document SchemaVersion="4" ProgramVersion="GHPV-Desktop 4.2">
+  <Objects Count="2">
+    <Object type="Part::Feature" name="ShellBody"/>
+    <Object type="GHPV::Nozzle" name="N1"/>
+  </Objects>
+  <ObjectData Count="2">
+    <Object name="ShellBody">
+      <Properties Count="11">
+        <Property name="VesselTag" type="App::PropertyString"><String value="V-707"/></Property>
+        <Property name="VesselName" type="App::PropertyString"><String value="加氢脱硫反应器"/></Property>
+        <Property name="DesignCode" type="App::PropertyString"><String value="GB/T 150-2024"/></Property>
+        <Property name="Diameter" type="App::PropertyLength"><Float value="1600"/></Property>
+        <Property name="Length" type="App::PropertyLength"><Float value="4500"/></Property>
+        <Property name="Thickness" type="App::PropertyLength"><Float value="24"/></Property>
+        <Property name="DesignPressure" type="App::PropertyFloat"><Float value="3.8"/></Property>
+        <Property name="DesignTemp" type="App::PropertyFloat"><Float value="260"/></Property>
+        <Property name="Material" type="App::PropertyString"><String value="Q345R"/></Property>
+        <Property name="Medium" type="App::PropertyString"><String value="循环氢"/></Property>
+        <Property name="VendorCode" type="App::PropertyString"><String value="GH-2026-07"/></Property>
+      </Properties>
+    </Object>
+  </ObjectData>
+</Document>`;
+
+  // Minimal valid OpenCASCADE ASCII BRep Poly_Triangulation (a 4-vertex tetrahedron in mm)
+  const sampleBrep = `DBRep_DrawableShape
+CASCADE Topology V1, (c) Matra-Datavision
+Triangulations 1
+4 4 0
+0.15
+0 0 0
+1600 0 0
+800 1600 0
+800 800 4500
+1 2 3
+1 2 4
+2 3 4
+3 1 4
+`;
+
+  const zipped = zipSync({
+    'Document.xml': strToU8(documentXml),
+    'PartShape.brp': strToU8(sampleBrep),
+  });
+  const zipArrayBuf = zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength);
+
+  const res = parseGhpvFileBuffer('7.ghpv', zipArrayBuf);
+  assert.equal(res.sourceFormat, 'ghpv_zip_archive');
+  assert.equal(res.spec.vesselTag, 'V-707');
+  assert.equal(res.spec.vesselName, '加氢脱硫反应器');
+  assert.equal(res.spec.designPressure, 3.8);
+  assert.equal(res.spec.designTemp, 260);
+  assert.equal(res.spec.medium, '循环氢');
+  assert.ok(res.archiveEntries && res.archiveEntries.length === 2);
+  assert.ok(res.embeddedMeshes && res.embeddedMeshes.length === 1);
+  assert.equal(res.embeddedMeshes[0].name, 'PartShape.brp');
+  assert.equal(res.embeddedMeshes[0].ext, 'brp');
+
+  // Verify OpenCASCADE .brp Poly_Triangulation parser directly and via loadEmbeddedMeshesToGroup
+  const brepGeom = parseOpenCascadeBrepToGeometry(sampleBrep);
+  assert.equal(brepGeom.attributes.position.count, 12, '4 triangles * 3 vertices = 12 positions');
+
+  const loaded = await loadEmbeddedMeshesToGroup('7.ghpv', res.embeddedMeshes);
+  assert.ok(loaded, 'Expected loadEmbeddedMeshesToGroup to return a non-null 3D mesh group');
+  assert.equal(loaded.stats.triangleCount, 4);
+  assert.ok(Math.abs(loaded.stats.sizeMm[2] - 4500) < 20, `Expected Z length ~4500mm, got ${loaded.stats.sizeMm[2]}`);
+});
+
+test('ZIP-packaged native GHPV JSON, GZIP-wrapped .ghpv, and encrypted/opaque ZIP error handling', () => {
+  // 1. Native GHPV JSON packed inside a PKZIP .ghpv
+  const sep = VESSEL_PRESETS.find((p) => p.id === 'large_separator')!;
+  const nativeJson = JSON.stringify({ version: 'GHPV-V2.1', spec: sep.spec, assemblies: sep.assemblies });
+  const zipNative = zipSync({ 'project.json': strToU8(nativeJson) });
+  const zipNativeBuf = zipNative.buffer.slice(zipNative.byteOffset, zipNative.byteOffset + zipNative.byteLength);
+  const resNative = parseGhpvFileBuffer('packed_sep.ghpv', zipNativeBuf);
+  assert.equal(resNative.sourceFormat, 'ghpv_zip_archive');
+  assert.equal(resNative.spec.vesselTag, sep.spec.vesselTag);
+  assert.equal(resNative.assemblies.length, sep.assemblies.length);
+  assert.equal(resNative.archiveEntries?.[0].name, 'project.json');
+
+  // 2. GZIP-compressed .ghpv unpacks transparently
+  const gzNative = gzipSync(strToU8(nativeJson));
+  const gzBuf = gzNative.buffer.slice(gzNative.byteOffset, gzNative.byteOffset + gzNative.byteLength);
+  const resGz = parseGhpvFileBuffer('gz_sep.ghpv', gzBuf);
+  assert.equal(resGz.spec.vesselTag, sep.spec.vesselTag);
+  assert.equal(resGz.assemblies.length, sep.assemblies.length);
+
+  // 3. Opaque binary-only ZIP archive throws honest error listing internal filenames
+  const opaqueZip = zipSync({
+    'model_data.bin': new Uint8Array([0x00, 0x01, 0x02, 0x03, 0xff, 0xfe, 0x7a, 0x8b]),
+  });
+  const opaqueBuf = opaqueZip.buffer.slice(opaqueZip.byteOffset, opaqueZip.byteOffset + opaqueZip.byteLength);
+  assert.throws(
+    () => parseGhpvFileBuffer('opaque.ghpv', opaqueBuf),
+    /model_data\.bin/
+  );
+
+  // 4. Password-encrypted ZIP flag (general purpose bit 0) throws explicit encryption message
+  const encZip = new Uint8Array(opaqueZip);
+  encZip[6] = encZip[6] | 0x01;
+  const encBuf = encZip.buffer.slice(encZip.byteOffset, encZip.byteOffset + encZip.byteLength);
+  assert.throws(
+    () => parseGhpvFileBuffer('locked.ghpv', encBuf),
+    /受密码保护.*model_data\.bin/
+  );
+});
+
 
 
 

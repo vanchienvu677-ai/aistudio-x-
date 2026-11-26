@@ -44,6 +44,7 @@ export interface ExternalMeshModel {
   name: string;
   object: THREE.Group;
   stats: SceneMeshStats;
+  loadToken: number;
 }
 
 export interface Exported3DFileBundle {
@@ -67,6 +68,7 @@ interface Viewport3DProps {
   assemblies: AssemblyPoint[];
   selectedComponentId: string | null;
   selectedSubNode?: string | null;
+  documentLoadVersion?: number;
   externalMeshModel?: ExternalMeshModel | null;
   onClearExternalModel?: () => void;
   renderMode: RenderMode;
@@ -161,6 +163,7 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       assemblies,
       selectedComponentId,
       selectedSubNode = null,
+      documentLoadVersion = 0,
       externalMeshModel = null,
       onClearExternalModel,
       renderMode,
@@ -770,7 +773,7 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
         state.nozzleAnchors = [];
         state.boundingBox = extBox;
 
-        const extKey = `ext:${externalMeshModel.name}`;
+        const extKey = `ext:${externalMeshModel.name}:${externalMeshModel.loadToken}`;
         if (prevAssemblyKeyRef.current !== extKey) {
           prevAssemblyKeyRef.current = extKey;
           state.applyViewPreset('iso', true);
@@ -793,14 +796,14 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       state.nozzleAnchors = built.nozzleAnchors;
       state.boundingBox = built.boundingBox;
 
-      const assemblyKey = `${assemblies.map((a) => `${a.id}:${a.orientation}`).join('|')}|exp:${explodeFactor > 0.01 ? 1 : 0}`;
+      const assemblyKey = `doc:${documentLoadVersion}|${assemblies.map((a) => `${a.id}:${a.orientation}`).join('|')}|exp:${explodeFactor > 0.01 ? 1 : 0}`;
       if (prevAssemblyKeyRef.current !== assemblyKey) {
         prevAssemblyKeyRef.current = assemblyKey;
         state.applyViewPreset('iso', true);
       } else {
         state.requestRender();
       }
-    }, [assemblies, selectedComponentId, selectedSubNode, externalMeshModel, renderMode, sectionState, explodeFactor]);
+    }, [assemblies, selectedComponentId, selectedSubNode, documentLoadVersion, externalMeshModel, renderMode, sectionState, explodeFactor]);
 
     // Toggle origin visibility
     useEffect(() => {

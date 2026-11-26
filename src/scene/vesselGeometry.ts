@@ -34,6 +34,17 @@ import type {
 } from '../types/vessel';
 import { computeTubeLayout, layoutAssemblyMainComponents } from '../core/vesselMath';
 import { buildExtraAttachmentGeometry } from './extraAttachmentsGeometry';
+import {
+  buildPrecisionBoltRing,
+  buildPrecisionEquipmentFlange,
+  buildPrecisionPipeFlange,
+  buildPrecisionTubesheetGroup,
+  buildSpiralWoundGasketGroup,
+  computeFlangeDimensions,
+  createCrispHollowCylinder,
+  normalizeFacing,
+  normalizeFlangeStyle,
+} from './flangeGeometry';
 
 // Scale: 1 Three.js unit = 1000 mm (1 meter)
 export const MM_TO_M = 0.001;
@@ -135,21 +146,14 @@ function tagMeshHierarchy(
 }
 
 /**
- * Helper to create a hollow cylindrical shell along +Y from y=0 to y=length.
+ * Helper to create a crisp sharp-normal hollow cylindrical shell along +Y from y=0 to y=length.
  */
-function createHollowCylinder(rIn: number, rOut: number, length: number, segments = 48): THREE.LatheGeometry {
-  const pts = [
-    new THREE.Vector2(rIn, 0),
-    new THREE.Vector2(rOut, 0),
-    new THREE.Vector2(rOut, length),
-    new THREE.Vector2(rIn, length),
-    new THREE.Vector2(rIn, 0),
-  ];
-  return new THREE.LatheGeometry(pts, segments);
+function createHollowCylinder(rIn: number, rOut: number, length: number, segments = 72): THREE.LatheGeometry {
+  return createCrispHollowCylinder(rIn, rOut, length, segments, 0.0018);
 }
 
 /**
- * Create a 2:1 elliptical head (EHA) along +Y.
+ * Create a high-precision 2:1 elliptical head (EHA) along +Y with crisp rim bevel normals.
  * If flipped === false: dome starts at y=0 (apex), straight flange ends at y=hi+h.
  * If flipped === true: straight flange starts at y=0, dome apex ends at y=hi+h.
  */
@@ -160,7 +164,8 @@ function createEllipticalHeadGeometry(p: EllipticalHeadParams): THREE.LatheGeome
   const hi = (p.diameter / 4) * MM_TO_M;
   const h = Math.max(5, p.straightHeight) * MM_TO_M;
   const total = hi + h;
-  const steps = 20;
+  const steps = 32;
+  const bevel = Math.min(0.002, t * 0.22, h * 0.18);
 
   const pts: THREE.Vector2[] = [];
   if (!p.flipped) {
@@ -169,94 +174,51 @@ function createEllipticalHeadGeometry(p: EllipticalHeadParams): THREE.LatheGeome
       const ang = (i / steps) * (Math.PI / 2);
       const x = rOut * Math.sin(ang);
       const y = hi * (1 - Math.cos(ang));
-      pts.push(new THREE.Vector2(Math.max(0.001, x), y));
+      pts.push(new THREE.Vector2(Math.max(0.0008, x), y));
     }
-    pts.push(new THREE.Vector2(rOut, total));
-    pts.push(new THREE.Vector2(rIn, total));
+    pts.push(new THREE.Vector2(rOut, Math.max(hi, total - bevel)));
+    pts.push(new THREE.Vector2(rOut - bevel, total));
+    pts.push(new THREE.Vector2(rIn + bevel, total));
+    pts.push(new THREE.Vector2(rIn, Math.max(hi, total - bevel)));
     pts.push(new THREE.Vector2(rIn, hi));
     // Inner profile back to apex
     for (let i = steps; i >= 0; i--) {
       const ang = (i / steps) * (Math.PI / 2);
       const x = rIn * Math.sin(ang);
       const y = hi * (1 - Math.cos(ang)) + t;
-      pts.push(new THREE.Vector2(Math.max(0.001, x), y));
+      pts.push(new THREE.Vector2(Math.max(0.0008, x), y));
     }
   } else {
     // Starts with straight flange at y=0, dome apex at y=total
-    pts.push(new THREE.Vector2(rIn, 0));
-    pts.push(new THREE.Vector2(rOut, 0));
+    pts.push(new THREE.Vector2(rIn, bevel));
+    pts.push(new THREE.Vector2(rIn + bevel, 0));
+    pts.push(new THREE.Vector2(rOut - bevel, 0));
+    pts.push(new THREE.Vector2(rOut, bevel));
     pts.push(new THREE.Vector2(rOut, h));
     for (let i = 1; i <= steps; i++) {
       const ang = (i / steps) * (Math.PI / 2);
       const x = rOut * Math.cos(ang);
       const y = h + hi * Math.sin(ang);
-      pts.push(new THREE.Vector2(Math.max(0.001, x), y));
+      pts.push(new THREE.Vector2(Math.max(0.0008, x), y));
     }
     for (let i = steps; i >= 0; i--) {
       const ang = (i / steps) * (Math.PI / 2);
       const x = rIn * Math.cos(ang);
       const y = h + (hi - t) * Math.sin(ang);
-      pts.push(new THREE.Vector2(Math.max(0.001, x), y));
+      pts.push(new THREE.Vector2(Math.max(0.0008, x), y));
     }
-    pts.push(new THREE.Vector2(rIn, 0));
+    pts.push(new THREE.Vector2(rIn, bevel));
   }
 
-  return new THREE.LatheGeometry(pts, 48);
+  const geo = new THREE.LatheGeometry(pts, 72);
+  geo.computeVertexNormals();
+  return geo;
 }
 
-/**
- * Create a bolt & nut ring via InstancedMesh around Y axis at yPos.
- */
-function createBoltRing(
-  bcdMm: number,
-  boltCount: number,
-  yPosM: number,
-  boltLengthM: number,
-  boltRadiusM: number,
-  mat: THREE.Material,
-  explodeFactor = 0,
-  axialPushDir = 1
-): THREE.Group {
-  const g = new THREE.Group();
-  const baseR = (bcdMm / 2) * MM_TO_M;
-  // In GHPV exploded view, flange bolts fan radially outward into a crisp circular halo
-  const r = baseR * (1 + explodeFactor * 1.42);
-  const boltY = yPosM + axialPushDir * explodeFactor * 0.24;
-  const count = Math.max(4, Math.min(64, boltCount));
-
-  const studGeo = new THREE.CylinderGeometry(boltRadiusM, boltRadiusM, boltLengthM, 8);
-  const nutGeo = new THREE.CylinderGeometry(boltRadiusM * 1.75, boltRadiusM * 1.75, boltRadiusM * 1.6, 6);
-
-  const studs = new THREE.InstancedMesh(studGeo, mat, count);
-  const nutsTop = new THREE.InstancedMesh(nutGeo, mat, count);
-  const nutsBot = new THREE.InstancedMesh(nutGeo, mat, count);
-
-  const dummy = new THREE.Object3D();
-  for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2;
-    const x = Math.cos(a) * r;
-    const z = Math.sin(a) * r;
-
-    dummy.position.set(x, boltY, z);
-    dummy.rotation.set(0, a, 0);
-    dummy.updateMatrix();
-    studs.setMatrixAt(i, dummy.matrix);
-
-    dummy.position.set(x, boltY + boltLengthM * (0.36 + explodeFactor * 0.45), z);
-    dummy.updateMatrix();
-    nutsTop.setMatrixAt(i, dummy.matrix);
-
-    dummy.position.set(x, boltY - boltLengthM * (0.36 + explodeFactor * 0.45), z);
-    dummy.updateMatrix();
-    nutsBot.setMatrixAt(i, dummy.matrix);
-  }
-
-  studs.computeBoundingSphere();
-  nutsTop.computeBoundingSphere();
-  nutsBot.computeBoundingSphere();
-
-  g.add(studs, nutsTop, nutsBot);
-  return g;
+interface FlangeJointHint {
+  boltClampOverride?: { yBotFaceM: number; yTopFaceM: number } | null;
+  suppressBolts?: boolean;
+  forceFlipped?: boolean;
 }
 
 /**
@@ -267,20 +229,19 @@ function buildMainComponentGroup(
   renderMode: RenderMode,
   isSelected: boolean,
   clippingPlanes: THREE.Plane[],
-  explodeFactor = 0
+  explodeFactor = 0,
+  flangeJointHint?: FlangeJointHint
 ): THREE.Group {
   const group = new THREE.Group();
   group.name = comp.name;
   const mat = createComponentMaterial(comp.color, renderMode, isSelected, clippingPlanes);
   const boltMat = createComponentMaterial(
-    comp.type === 'equipment_flange'
-      ? { r: 52, g: 118, b: 228, a: 255 }
-      : { r: 165, g: 120, b: 36, a: 255 },
+    { r: 176, g: 186, b: 198, a: 255 },
     renderMode,
     isSelected,
     clippingPlanes,
-    0.25,
-    0.72
+    0.24,
+    0.78
   );
 
   switch (comp.type) {
@@ -292,14 +253,14 @@ function buildMainComponentGroup(
       if (p.returnBendRadiusMm && p.returnBendRadiusMm > 0) {
         // 180° return shell bend (弯头筒体) linking lower & upper stacked exchanger shells
         const bendR = p.returnBendRadiusMm * MM_TO_M;
-        const bendGeo = new THREE.TorusGeometry(bendR, rOut, 24, 36, Math.PI);
+        const bendGeo = new THREE.TorusGeometry(bendR, rOut, 36, 48, Math.PI);
         const bendMesh = new THREE.Mesh(bendGeo, mat);
         // Position so t=0 starts at (0,0,0) heading +Y (world +X) and t=PI ends at (-2*bendR,0,0) (world +2*bendR UP)
         bendMesh.position.set(-bendR, explodeFactor * 0.45, 0);
         group.add(bendMesh);
       } else {
         const len = p.length * MM_TO_M;
-        const mesh = new THREE.Mesh(createHollowCylinder(rIn, rOut, len, 48), mat);
+        const mesh = new THREE.Mesh(createHollowCylinder(rIn, rOut, len, 72), mat);
         group.add(mesh);
       }
       break;
@@ -314,14 +275,39 @@ function buildMainComponentGroup(
 
     case 'spherical_head': {
       const p = comp.params as SphericalHeadParams;
-      const r = (p.diameter / 2 + p.thickness) * MM_TO_M;
-      const geo = new THREE.SphereGeometry(r, 40, 20, 0, Math.PI * 2, 0, Math.PI / 2);
-      const mesh = new THREE.Mesh(geo, mat);
+      const rIn = (p.diameter / 2) * MM_TO_M;
+      const t = Math.max(4, p.thickness) * MM_TO_M;
+      const rOut = rIn + t;
+      const steps = 28;
+      const bevel = Math.min(0.002, t * 0.22);
+      const pts: THREE.Vector2[] = [];
       if (!p.flipped) {
-        mesh.rotation.x = Math.PI;
-        mesh.position.y = r;
+        for (let i = 0; i <= steps; i++) {
+          const ang = (i / steps) * (Math.PI / 2);
+          pts.push(new THREE.Vector2(Math.max(0.0008, rOut * Math.sin(ang)), rOut * (1 - Math.cos(ang))));
+        }
+        pts.push(new THREE.Vector2(rOut - bevel, rOut));
+        pts.push(new THREE.Vector2(rIn + bevel, rOut));
+        for (let i = steps; i >= 0; i--) {
+          const ang = (i / steps) * (Math.PI / 2);
+          pts.push(new THREE.Vector2(Math.max(0.0008, rIn * Math.sin(ang)), rOut - rIn * Math.cos(ang)));
+        }
+      } else {
+        pts.push(new THREE.Vector2(rIn + bevel, 0));
+        pts.push(new THREE.Vector2(rOut - bevel, 0));
+        for (let i = 0; i <= steps; i++) {
+          const ang = (i / steps) * (Math.PI / 2);
+          pts.push(new THREE.Vector2(Math.max(0.0008, rOut * Math.cos(ang)), rOut * Math.sin(ang)));
+        }
+        for (let i = steps; i >= 0; i--) {
+          const ang = (i / steps) * (Math.PI / 2);
+          pts.push(new THREE.Vector2(Math.max(0.0008, rIn * Math.cos(ang)), rIn * Math.sin(ang)));
+        }
+        pts.push(new THREE.Vector2(rIn + bevel, 0));
       }
-      group.add(mesh);
+      const geo = new THREE.LatheGeometry(pts, 72);
+      geo.computeVertexNormals();
+      group.add(new THREE.Mesh(geo, mat));
       break;
     }
 
@@ -453,7 +439,7 @@ function buildMainComponentGroup(
         // Bottom-tangent skewed eccentric frustum: in horizontal axisGroup (rotZ = -PI/2),
         // local +X is world DOWN, so shifting the large end by -(rTop - rBot) along local X
         // keeps the bottom generatrix flat while expanding the kettle vapor space UPWARD.
-        const segs = 48;
+        const segs = 72;
         const dxEnd = -(rTop - rBot);
         const rings: Array<{ y: number; r: number; cx: number }> = [
           { y: 0, r: rBot + t, cx: 0 },
@@ -489,67 +475,47 @@ function buildMainComponentGroup(
         geo.computeVertexNormals();
         group.add(new THREE.Mesh(geo, mat));
       } else {
+        const c = Math.min(0.002, t * 0.22);
         const pts = [
-          new THREE.Vector2(rBot, 0),
-          new THREE.Vector2(rBot + t, 0),
+          new THREE.Vector2(rBot, c),
+          new THREE.Vector2(rBot + c, 0),
+          new THREE.Vector2(rBot + t - c, 0),
+          new THREE.Vector2(rBot + t, c),
           new THREE.Vector2(rBot + t, h2),
           new THREE.Vector2(rTop + t, H - h1),
-          new THREE.Vector2(rTop + t, H),
-          new THREE.Vector2(rTop, H),
+          new THREE.Vector2(rTop + t, H - c),
+          new THREE.Vector2(rTop + t - c, H),
+          new THREE.Vector2(rTop + c, H),
+          new THREE.Vector2(rTop, H - c),
           new THREE.Vector2(rTop, H - h1),
           new THREE.Vector2(rBot, h2),
-          new THREE.Vector2(rBot, 0),
+          new THREE.Vector2(rBot, c),
         ];
-        group.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 48), mat));
+        const coneGeo = new THREE.LatheGeometry(pts, 72);
+        coneGeo.computeVertexNormals();
+        group.add(new THREE.Mesh(coneGeo, mat));
       }
       break;
     }
 
     case 'equipment_flange': {
-      const p = comp.params as EquipmentFlangeParams;
-      const rIn = (p.dn / 2) * MM_TO_M;
-      const rOut = (p.outerDiameter / 2) * MM_TO_M;
-      const hubOuter = rIn + 0.028;
-      const flgT = p.thickness * MM_TO_M;
-      const totalH = p.height * MM_TO_M;
-
-      const pts: THREE.Vector2[] = p.flipped
-        ? [
-            new THREE.Vector2(p.flangeType === '法兰盖(BL)' ? 0.001 : rIn, 0),
-            new THREE.Vector2(rOut, 0),
-            new THREE.Vector2(rOut, flgT),
-            new THREE.Vector2(hubOuter + 0.015, flgT),
-            new THREE.Vector2(rIn + 0.014, totalH),
-            new THREE.Vector2(rIn, totalH),
-            new THREE.Vector2(p.flangeType === '法兰盖(BL)' ? 0.001 : rIn, 0),
-          ]
-        : [
-            new THREE.Vector2(rIn, 0),
-            new THREE.Vector2(rIn + 0.014, 0),
-            new THREE.Vector2(hubOuter + 0.015, totalH - flgT),
-            new THREE.Vector2(rOut, totalH - flgT),
-            new THREE.Vector2(rOut, totalH),
-            new THREE.Vector2(p.flangeType === '法兰盖(BL)' ? 0.001 : rIn, totalH),
-            new THREE.Vector2(rIn, 0),
-          ];
-
-      group.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 48), mat));
-
-      // Add bolt & nut ring on flange face (explodes radially into a floating bolt halo)
-      const boltY = p.flipped ? flgT * 0.5 : totalH - flgT * 0.5;
-      const boltR = Math.max(0.008, (rOut - rIn) * 0.14);
-      group.add(
-        createBoltRing(
-          p.boltCircle,
-          p.boltCount,
-          boltY,
-          flgT * 2.4,
-          boltR,
-          boltMat,
-          explodeFactor,
-          p.flipped ? -1 : 1
-        )
-      );
+      const rawP = comp.params as EquipmentFlangeParams;
+      const p: EquipmentFlangeParams =
+        flangeJointHint?.forceFlipped !== undefined
+          ? { ...rawP, flipped: flangeJointHint.forceFlipped }
+          : rawP;
+      const built = buildPrecisionEquipmentFlange({
+        params: p,
+        color: comp.color,
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        explodeFactor,
+        createMat: createComponentMaterial,
+        boltClampOverride: flangeJointHint?.boltClampOverride,
+        suppressBolts: flangeJointHint?.suppressBolts,
+      });
+      group.add(built.group);
       break;
     }
 
@@ -557,8 +523,20 @@ function buildMainComponentGroup(
       const p = comp.params as GasketParams;
       const rIn = (p.innerDiameter / 2) * MM_TO_M;
       const rOut = (p.outerDiameter / 2) * MM_TO_M;
-      const t = Math.max(5, p.thickness) * MM_TO_M;
-      group.add(new THREE.Mesh(createHollowCylinder(rIn, rOut, t, 48), mat));
+      const t = Math.max(4.5, p.thickness) * MM_TO_M;
+      group.add(
+        buildSpiralWoundGasketGroup({
+          rInM: rIn,
+          rOutM: rOut,
+          thicknessM: t,
+          baseColor: comp.color,
+          renderMode,
+          isSelected,
+          clippingPlanes,
+          createMat: createComponentMaterial,
+          segments: 72,
+        })
+      );
       break;
     }
 
@@ -573,21 +551,28 @@ function buildMainComponentGroup(
       const ringT = Math.max(18, p.baseRingThickness) * MM_TO_M;
       const gussetH = p.gussetHeight * MM_TO_M;
 
-      // Skirt cylinder/cone
+      // Skirt cylinder/cone with crisp bevel ends
+      const c = Math.min(0.002, t * 0.2);
       const pts = [
-        new THREE.Vector2(rBot, 0),
-        new THREE.Vector2(rBot + t, 0),
-        new THREE.Vector2(rTop + t, H),
-        new THREE.Vector2(rTop, H),
-        new THREE.Vector2(rBot, 0),
+        new THREE.Vector2(rBot, c),
+        new THREE.Vector2(rBot + c, 0),
+        new THREE.Vector2(rBot + t - c, 0),
+        new THREE.Vector2(rBot + t, c),
+        new THREE.Vector2(rTop + t, H - c),
+        new THREE.Vector2(rTop + t - c, H),
+        new THREE.Vector2(rTop + c, H),
+        new THREE.Vector2(rTop, H - c),
+        new THREE.Vector2(rBot, c),
       ];
-      group.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 48), mat));
+      const skirtGeo = new THREE.LatheGeometry(pts, 72);
+      skirtGeo.computeVertexNormals();
+      group.add(new THREE.Mesh(skirtGeo, mat));
 
       // Bottom base ring plate
-      group.add(new THREE.Mesh(createHollowCylinder(ringID, ringOD, ringT, 48), mat));
+      group.add(new THREE.Mesh(createHollowCylinder(ringID, ringOD, ringT, 72), mat));
 
       // Upper chair cover ring
-      const coverRing = new THREE.Mesh(createHollowCylinder(rBot + t, ringOD, ringT * 0.8, 48), mat);
+      const coverRing = new THREE.Mesh(createHollowCylinder(rBot + t, ringOD, ringT * 0.8, 72), mat);
       coverRing.position.y = gussetH;
       group.add(coverRing);
 
@@ -615,7 +600,7 @@ function buildMainComponentGroup(
       // Inspection hole frame on skirt wall
       if (p.hasInspectionHole) {
         const holeFrame = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.24, 0.24, 0.14, 24, 1, true),
+          createHollowCylinder(0.22, 0.25, 0.14, 36),
           boltMat
         );
         holeFrame.rotation.z = Math.PI / 2;
@@ -628,36 +613,61 @@ function buildMainComponentGroup(
     case 'fixed_tubesheet':
     case 'u_tube_head': {
       const p = comp.params as FixedTubeSheetParams;
-      const rOut = (p.outerDiameter / 2) * MM_TO_M;
-      const t = p.thickness * MM_TO_M;
-      const disc = new THREE.Mesh(new THREE.CylinderGeometry(rOut, rOut, t, 48), mat);
-      disc.position.y = t / 2;
-      group.add(disc);
+      group.add(
+        buildPrecisionTubesheetGroup({
+          diameterMm: p.diameter,
+          outerDiameterMm: p.outerDiameter,
+          thicknessMm: p.thickness,
+          bcdMm: p.bcd,
+          boltCount: p.boltCount,
+          boltSpec: p.boltSpec,
+          color: comp.color,
+          renderMode,
+          isSelected,
+          clippingPlanes,
+          createMat: createComponentMaterial,
+        })
+      );
       break;
     }
 
     case 'expansion_joint': {
       const p = comp.params as ExpansionJointParams;
       const rIn = (p.dn / 2) * MM_TO_M;
+      const wall = Math.max(0.004, (p.thickness || 4) * MM_TO_M);
       const waveH = p.waveHeight * MM_TO_M;
       const L = p.totalLength * MM_TO_M;
       const waves = Math.max(1, Math.min(6, p.waveCount));
       const pts: THREE.Vector2[] = [];
-      const steps = waves * 16;
+      const steps = waves * 24;
       const margin = L * 0.14;
       const activeL = L - margin * 2;
 
-      pts.push(new THREE.Vector2(rIn, 0));
-      pts.push(new THREE.Vector2(rIn, margin));
+      // Outer corrugated profile
+      pts.push(new THREE.Vector2(rIn + wall, 0));
+      pts.push(new THREE.Vector2(rIn + wall, margin));
       for (let i = 0; i <= steps; i++) {
+        const u = i / steps;
+        const y = margin + u * activeL;
+        const wave = 0.5 * (1 - Math.cos(u * waves * Math.PI * 2));
+        pts.push(new THREE.Vector2(rIn + wall + wave * waveH, y));
+      }
+      pts.push(new THREE.Vector2(rIn + wall, L));
+      // Inner corrugated profile
+      pts.push(new THREE.Vector2(rIn, L));
+      for (let i = steps; i >= 0; i--) {
         const u = i / steps;
         const y = margin + u * activeL;
         const wave = 0.5 * (1 - Math.cos(u * waves * Math.PI * 2));
         pts.push(new THREE.Vector2(rIn + wave * waveH, y));
       }
-      pts.push(new THREE.Vector2(rIn, L));
+      pts.push(new THREE.Vector2(rIn, margin));
+      pts.push(new THREE.Vector2(rIn, 0));
+      pts.push(new THREE.Vector2(rIn + wall, 0));
 
-      group.add(new THREE.Mesh(new THREE.LatheGeometry(pts, 48), mat));
+      const expGeo = new THREE.LatheGeometry(pts, 72);
+      expGeo.computeVertexNormals();
+      group.add(new THREE.Mesh(expGeo, mat));
       break;
     }
   }
@@ -679,26 +689,26 @@ function buildNozzleOrManhole(
 ): { group: THREE.Group; tipPosLocal: THREE.Vector3 } {
   const g = new THREE.Group();
   const mat = createComponentMaterial(color, renderMode, isSelected, clippingPlanes, 0.32, 0.56);
-  const boltMat = createComponentMaterial(
-    { r: 170, g: 130, b: 42, a: 255 },
+  const studMat = createComponentMaterial(
+    { r: 108, g: 120, b: 136, a: 255 },
     renderMode,
     isSelected,
     clippingPlanes,
-    0.26,
-    0.72
+    0.34,
+    0.74
   );
-  const gasketMat = createComponentMaterial(
-    { r: 58, g: 168, b: 96, a: 255 },
+  const nutMat = createComponentMaterial(
+    { r: 196, g: 204, b: 214, a: 255 },
     renderMode,
     isSelected,
     clippingPlanes,
-    0.55,
-    0.18
+    0.22,
+    0.82
   );
+  const boltMat = nutMat;
 
   // Authentic GHPV bottom vertical liquid boot / collector pot (集液包):
   // Cylinder + bottom elliptical cap + bottom drain nozzle/flange + side instrument stubs.
-  // Explodes cleanly along local +Y (downward in world space when angleDeg = 180).
   if (p.isLiquidBoot) {
     const bootD = Math.max(240, p.bootDiameter || p.dn || 740);
     const bootL = Math.max(360, p.bootLength || p.protrusion || 1100);
@@ -706,14 +716,8 @@ function buildNozzleOrManhole(
     const rIn = Math.max(0.06, (bootD / 2) * MM_TO_M);
     const lenM = bootL * MM_TO_M;
 
-    const headMat = createComponentMaterial(
-      { r: 214, g: 76, b: 146, a: 255 },
-      renderMode,
-      isSelected,
-      clippingPlanes,
-      0.32,
-      0.52
-    );
+    const headColor: RgbaColor = { r: 214, g: 76, b: 146, a: 255 };
+    const headMat = createComponentMaterial(headColor, renderMode, isSelected, clippingPlanes, 0.32, 0.52);
     const drainMat = createComponentMaterial(
       { r: 86, g: 174, b: 214, a: 255 },
       renderMode,
@@ -724,21 +728,38 @@ function buildNozzleOrManhole(
     );
 
     const cylY = parentRadiusM - 0.14 + explodeFactor * 0.28;
-    const cyl = new THREE.Mesh(createHollowCylinder(rIn, rOut, lenM + 0.14, 36), mat);
+    const cyl = new THREE.Mesh(createHollowCylinder(rIn, rOut, lenM + 0.14, 64), mat);
     cyl.position.y = cylY;
     g.add(cyl);
 
-    // Side level-gauge stubs on liquid boot
+    // Side level-gauge stubs with real drilled WN-RF flanges
     for (const side of [-1, 1]) {
-      const stub = new THREE.Mesh(createHollowCylinder(0.028, 0.042, 0.24, 16), drainMat);
-      stub.rotation.z = side * (Math.PI / 2);
+      const stubFlg = buildPrecisionPipeFlange({
+        params: {
+          flangeType: 'WN-RF',
+          dn: 50,
+          pipeOD: 60.3,
+          pipeThickness: 5,
+          flangeOD: 165,
+          flangeThickness: 20,
+          boltCount: 4,
+        },
+        color: headColor,
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat: createComponentMaterial,
+        segments: 48,
+      });
+      const stubLen = Math.max(0.08, 0.23 - stubFlg.totalHeightM);
+      const stub = new THREE.Mesh(createHollowCylinder(0.025, 0.03015, stubLen + 0.02, 40), drainMat);
+      stub.rotation.z = side > 0 ? -Math.PI / 2 : Math.PI / 2;
       stub.position.set(side * (rOut - 0.02), cylY + lenM * (side > 0 ? 0.42 : 0.72), 0);
       g.add(stub);
 
-      const stubFlg = new THREE.Mesh(new THREE.CylinderGeometry(0.088, 0.088, 0.024, 18), headMat);
-      stubFlg.rotation.z = side * (Math.PI / 2);
-      stubFlg.position.set(side * (rOut + 0.21), cylY + lenM * (side > 0 ? 0.42 : 0.72), 0);
-      g.add(stubFlg);
+      stubFlg.group.rotation.z = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+      stubFlg.group.position.set(side * (rOut + stubLen), cylY + lenM * (side > 0 ? 0.42 : 0.72), 0);
+      g.add(stubFlg.group);
     }
 
     // Bottom 2:1 elliptical cap on liquid boot
@@ -761,35 +782,40 @@ function buildNozzleOrManhole(
     capMesh.position.y = capY;
     g.add(capMesh);
 
-    // Bottom drain pipe + flange + bolt ring
+    // Bottom drain pipe + real drilled WN-RF flange
     const headDepth = (bootD / 4 + 25) * MM_TO_M;
     const drainY = capY + headDepth - 0.04 + explodeFactor * 0.52;
-    const drainPipe = new THREE.Mesh(createHollowCylinder(0.055, 0.072, 0.26, 20), drainMat);
+    const drainFlg = buildPrecisionPipeFlange({
+      params: {
+        flangeType: 'WN-RF',
+        dn: 100,
+        pipeOD: 114.3,
+        pipeThickness: 6,
+        flangeOD: 230,
+        flangeThickness: 24,
+        boltCount: 8,
+      },
+      color: headColor,
+      renderMode,
+      isSelected,
+      clippingPlanes,
+      createMat: createComponentMaterial,
+      segments: 56,
+    });
+    const drainPipeLen = Math.max(0.08, 0.28 - drainFlg.totalHeightM);
+    const drainPipe = new THREE.Mesh(createHollowCylinder(0.051, 0.05715, drainPipeLen + 0.01, 48), drainMat);
     drainPipe.position.y = drainY;
     g.add(drainPipe);
 
-    const drainFlg = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.145, 0.032, 24), headMat);
-    drainFlg.position.y = drainY + 0.26 + explodeFactor * 0.18;
-    g.add(drainFlg);
+    drainFlg.group.position.y = drainY + drainPipeLen + explodeFactor * 0.18;
+    g.add(drainFlg.group);
 
-    const drainBolts = createBoltRing(
-      220,
-      8,
-      drainY + 0.26 + explodeFactor * 0.18,
-      0.065,
-      0.011,
-      boltMat,
-      explodeFactor * 0.5,
-      1
-    );
-    g.add(drainBolts);
-
-    const tipPosLocal = new THREE.Vector3(0, drainY + 0.34, 0);
+    const tipPosLocal = new THREE.Vector3(0, drainY + drainPipeLen + drainFlg.totalHeightM + 0.08, 0);
     return { group: g, tipPosLocal };
   }
 
   const rPipeOut = (p.pipeOD / 2) * MM_TO_M;
-  const rPipeIn = Math.max(0.01, rPipeOut - p.pipeThickness * MM_TO_M);
+  const rPipeIn = Math.max(0.008, rPipeOut - p.pipeThickness * MM_TO_M);
   const rFlg = (p.flangeOD / 2) * MM_TO_M;
   const flgT = p.flangeThickness * MM_TO_M;
   const lOut = p.protrusion * MM_TO_M;
@@ -797,45 +823,54 @@ function buildNozzleOrManhole(
   const pipeStartY = parentRadiusM - lIn - 0.04;
   const pipeEndY = parentRadiusM + lOut;
 
-  // Reinforcing pad around shell intersection
+  // Reinforcing pad around shell intersection — contoured to hug cylindrical shell curvature seamlessly!
   if (p.hasPad) {
     const padOuterR = p.padOD ? (p.padOD / 2) * MM_TO_M : rPipeOut * 1.48;
     const padThickM = p.padThickness ? Math.max(0.008, p.padThickness * MM_TO_M) : 0.018;
-    const pad = new THREE.Mesh(
-      createHollowCylinder(rPipeOut, Math.max(rPipeOut + 0.02, padOuterR), padThickM, 32),
-      mat
-    );
-    pad.position.y = parentRadiusM - padThickM * 0.45;
+    const finalPadOuterR = Math.max(rPipeOut + 0.02, padOuterR);
+    const padGeo = createHollowCylinder(rPipeOut, finalPadOuterR, padThickM, 64);
+    if (parentRadiusM > finalPadOuterR * 1.08) {
+      // Local Z runs circumferentially around shell; warp Y onto sqrt(R^2 - z^2) so pad hugs shell with zero flank gap
+      const pos = padGeo.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const z = pos.getZ(i);
+        const drop = Math.sqrt(Math.max(0.0001, parentRadiusM * parentRadiusM - z * z)) - parentRadiusM;
+        pos.setY(i, pos.getY(i) + drop);
+      }
+      pos.needsUpdate = true;
+      padGeo.computeVertexNormals();
+    }
+    const pad = new THREE.Mesh(padGeo, mat);
+    pad.position.y = parentRadiusM - 0.002;
     g.add(pad);
   }
 
   let tipPosLocal = new THREE.Vector3(0, pipeEndY + flgT, 0);
 
   if (p.hasElbow) {
-    // Authentic GHPV 90° elbow draw-off pipe (引出管):
+    // Authentic GHPV 90° elbow draw-off pipe (引出管) with precision drilled WN/SO/PL flange:
     const defaultBendR = (p.elbowType === '短半径' ? 1.0 : 1.5) * Math.max(40, p.dn);
     const bendR = Math.max(rPipeOut * 1.15, (p.elbowRadius || defaultBendR) * MM_TO_M);
-    const runTotalM = Math.max(bendR + 0.08, (p.elbowRunLength || Math.max(320, p.dn * 2.6)) * MM_TO_M);
+    const runTotalM = Math.max(bendR + 0.1, (p.elbowRunLength || Math.max(320, p.dn * 2.6)) * MM_TO_M);
     const stemDropM = Math.max(bendR + 0.04, lOut);
     const straightStemM = Math.max(0.04, stemDropM - bendR);
-    const horizRunM = Math.max(0.05, runTotalM - bendR);
 
     const elbowGroup = new THREE.Group();
     elbowGroup.rotation.y = ((p.elbowDirDeg || 0) * Math.PI) / 180;
 
     // Straight stem (includes inner protrusion L2)
     const pipe1 = new THREE.Mesh(
-      createHollowCylinder(rPipeIn, rPipeOut, straightStemM + lIn + 0.05, 28),
+      createHollowCylinder(rPipeIn, rPipeOut, straightStemM + lIn + 0.05, 48),
       mat
     );
     pipe1.position.y = parentRadiusM - lIn - 0.05;
     elbowGroup.add(pipe1);
 
-    // Smooth circular 90° bend + straight horizontal exit pipe to L3
+    // Smooth circular 90° bend
     const yBendStart = parentRadiusM + straightStemM;
     const yHoriz = yBendStart + bendR;
     const arcPts: THREE.Vector3[] = [];
-    const arcSteps = 12;
+    const arcSteps = 24;
     for (let i = 0; i <= arcSteps; i++) {
       const a = (i / arcSteps) * (Math.PI / 2);
       const x = bendR * (1 - Math.cos(a));
@@ -843,55 +878,92 @@ function buildNozzleOrManhole(
       arcPts.push(new THREE.Vector3(x, y, 0));
     }
     const bendCurve = new THREE.CatmullRomCurve3(arcPts);
-    const elbowMesh = new THREE.Mesh(new THREE.TubeGeometry(bendCurve, 20, rPipeOut, 24, false), mat);
+    const elbowMesh = new THREE.Mesh(new THREE.TubeGeometry(bendCurve, 28, rPipeOut, 36, false), mat);
     elbowGroup.add(elbowMesh);
 
-    // Straight horizontal pipe run from bend exit (x = bendR) to flange (x = bendR + horizRunM)
-    const horizPipe = new THREE.Mesh(createHollowCylinder(rPipeIn, rPipeOut, horizRunM, 28), mat);
+    // Precision end flange whose Raised Face lands exactly at x = runTotalM
+    const maxElbowHubMm = Math.max(0, (runTotalM - bendR - flgT - 0.02) / MM_TO_M);
+    const endFlg = buildPrecisionPipeFlange({
+      params: p,
+      color,
+      renderMode,
+      isSelected,
+      clippingPlanes,
+      createMat: createComponentMaterial,
+      maxHubHeightMm: maxElbowHubMm,
+      segments: 56,
+    });
+    const style = normalizeFlangeStyle(p.flangeType);
+    const isWeldingNeck = style === 'WN' || style === 'LWN';
+    const horizPipeLen = isWeldingNeck
+      ? Math.max(0.02, runTotalM - bendR - endFlg.totalHeightM + 0.002)
+      : Math.max(0.02, runTotalM - bendR - endFlg.dims.rfHeightMm * MM_TO_M - 0.003);
+
+    const horizPipe = new THREE.Mesh(createHollowCylinder(rPipeIn, rPipeOut, horizPipeLen, 48), mat);
     horizPipe.rotation.z = -Math.PI / 2;
     horizPipe.position.set(bendR, yHoriz, 0);
     elbowGroup.add(horizPipe);
 
-    // End welding-neck flange at x = runTotalM
-    const flgPts = [
-      new THREE.Vector2(rPipeIn, 0),
-      new THREE.Vector2(rPipeOut + 0.012, 0),
-      new THREE.Vector2(rFlg, 0.028),
-      new THREE.Vector2(rFlg, 0.028 + flgT),
-      new THREE.Vector2(rPipeIn, 0.028 + flgT),
-      new THREE.Vector2(rPipeIn, 0),
-    ];
-    const endFlange = new THREE.Mesh(new THREE.LatheGeometry(flgPts, 32), mat);
-    endFlange.rotation.z = -Math.PI / 2;
-    endFlange.position.set(runTotalM - flgT - 0.028 + explodeFactor * 0.22, yHoriz, 0);
-    elbowGroup.add(endFlange);
+    const flgBaseX = runTotalM - endFlg.totalHeightM + explodeFactor * 0.22;
+    endFlg.group.rotation.z = -Math.PI / 2;
+    endFlg.group.position.set(flgBaseX, yHoriz, 0);
+    elbowGroup.add(endFlg.group);
 
     const hasCover = p.hasBlindCover || p.isManhole;
     if (hasCover) {
-      const gask = new THREE.Mesh(createHollowCylinder(rPipeIn, rFlg * 0.86, 0.008, 28), gasketMat);
+      const gaskT = 0.006;
+      const gask = buildSpiralWoundGasketGroup({
+        rInM: rPipeIn,
+        rOutM: endFlg.dims.rRfOuterMm * MM_TO_M,
+        thicknessM: gaskT,
+        baseColor: { r: 58, g: 168, b: 96, a: 255 },
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat: createComponentMaterial,
+        segments: 56,
+      });
       gask.rotation.z = -Math.PI / 2;
       gask.position.set(runTotalM + explodeFactor * 0.36, yHoriz, 0);
       elbowGroup.add(gask);
 
-      const cover = new THREE.Mesh(new THREE.CylinderGeometry(rFlg, rFlg, flgT, 32), mat);
-      cover.rotation.z = -Math.PI / 2;
-      cover.position.set(runTotalM + 0.008 + flgT * 0.5 + explodeFactor * 0.52, yHoriz, 0);
-      elbowGroup.add(cover);
-    }
+      const blindCover = buildPrecisionPipeFlange({
+        params: p,
+        color,
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat: createComponentMaterial,
+        overrideStyle: 'BL',
+        segments: 56,
+      });
+      // Flip BL cover so its machined RF face seals back against the gasket
+      const coverWrap = new THREE.Group();
+      blindCover.group.scale.y = -1;
+      blindCover.group.position.y = blindCover.totalHeightM;
+      coverWrap.add(blindCover.group);
+      coverWrap.rotation.z = -Math.PI / 2;
+      coverWrap.position.set(runTotalM + gaskT + explodeFactor * 0.52, yHoriz, 0);
+      elbowGroup.add(coverWrap);
 
-    const bolts = createBoltRing(
-      p.flangeOD * 0.82,
-      p.boltCount,
-      0,
-      flgT * (hasCover ? 2.8 : 2.1),
-      Math.max(0.007, rFlg * 0.055),
-      boltMat,
-      explodeFactor * 0.65,
-      1
-    );
-    bolts.rotation.z = -Math.PI / 2;
-    bolts.position.set(runTotalM - flgT * 0.4 + explodeFactor * 0.32, yHoriz, 0);
-    elbowGroup.add(bolts);
+      const yBackLower = flgBaseX + endFlg.dims.hubHeightMm * MM_TO_M;
+      const yBackCover =
+        runTotalM + gaskT + explodeFactor * 0.52 + blindCover.totalHeightM;
+      const bolts = buildPrecisionBoltRing({
+        bcdRMm: endFlg.dims.bcdRMm,
+        boltCount: endFlg.dims.boltCount,
+        boltDiaMm: endFlg.dims.boltDiaMm,
+        yBotFaceM: yBackLower,
+        yTopFaceM: yBackCover,
+        studMat,
+        nutMat,
+        explodeFactor: explodeFactor * 0.55,
+        axialPushDir: 0,
+      });
+      bolts.rotation.z = -Math.PI / 2;
+      bolts.position.set(0, yHoriz, 0);
+      elbowGroup.add(bolts);
+    }
 
     g.add(elbowGroup);
 
@@ -909,26 +981,8 @@ function buildNozzleOrManhole(
     const gaskExplode = explodeFactor * (isLargeDome ? 1.52 : 0.38);
     const coverExplode = explodeFactor * (isLargeDome ? 1.98 : 0.54);
 
-    const lowerFlgMat = isLargeDome
-      ? createComponentMaterial(
-          { r: 108, g: 64, b: 172, a: 255 },
-          renderMode,
-          isSelected,
-          clippingPlanes,
-          0.3,
-          0.56
-        )
-      : mat;
-    const upperFlgMat = isLargeDome
-      ? createComponentMaterial(
-          { r: 222, g: 82, b: 104, a: 255 },
-          renderMode,
-          isSelected,
-          clippingPlanes,
-          0.3,
-          0.52
-        )
-      : mat;
+    const lowerFlgColor: RgbaColor = isLargeDome ? { r: 108, g: 64, b: 172, a: 255 } : color;
+    const upperFlgColor: RgbaColor = isLargeDome ? { r: 222, g: 82, b: 104, a: 255 } : color;
     const topCapMat = isLargeDome
       ? createComponentMaterial(
           { r: 234, g: 122, b: 168, a: 195 },
@@ -939,99 +993,124 @@ function buildNozzleOrManhole(
           0.42
         )
       : mat;
-    const domeBoltMat = isLargeDome
-      ? createComponentMaterial(
-          { r: 78, g: 108, b: 156, a: 255 },
-          renderMode,
-          isSelected,
-          clippingPlanes,
-          0.26,
-          0.74
-        )
-      : boltMat;
 
-    // Straight nozzle pipe (接管筒节)
+    // Limit flange hub height so it never penetrates back into the shell wall on short nozzles
+    const availForHubMm = Math.max(0, (lOut - flgT - 0.018) / MM_TO_M);
+    const lowerFlg = buildPrecisionPipeFlange({
+      params: p,
+      color: lowerFlgColor,
+      renderMode,
+      isSelected,
+      clippingPlanes,
+      createMat: createComponentMaterial,
+      maxHubHeightMm: availForHubMm,
+      segments: isLargeDome ? 72 : 56,
+    });
+
+    const style = normalizeFlangeStyle(p.flangeType);
+    const isWeldingNeck = style === 'WN' || style === 'LWN';
+    const flangeBaseY = pipeEndY - lowerFlg.totalHeightM;
+    const pipeTopY = isWeldingNeck
+      ? Math.max(pipeStartY + 0.015, flangeBaseY + 0.0015)
+      : Math.max(pipeStartY + 0.015, pipeEndY - lowerFlg.dims.rfHeightMm * MM_TO_M - 0.003);
+
+    // Straight nozzle pipe (接管筒节) meeting WN weld bevel cleanly
     const neckMesh = new THREE.Mesh(
-      createHollowCylinder(rPipeIn, rPipeOut, pipeEndY - pipeStartY, isLargeDome ? 48 : 32),
+      createHollowCylinder(rPipeIn, rPipeOut, Math.max(0.01, pipeTopY - pipeStartY), isLargeDome ? 72 : 56),
       mat
     );
     neckMesh.position.y = pipeStartY + neckExplode;
     g.add(neckMesh);
 
-    // Lower welding neck taper + flange ring (下法兰)
-    const flgPts = [
-      new THREE.Vector2(rPipeIn, 0),
-      new THREE.Vector2(rPipeOut + 0.012, 0),
-      new THREE.Vector2(rFlg, 0.03),
-      new THREE.Vector2(rFlg, 0.03 + flgT),
-      new THREE.Vector2(rPipeIn, 0.03 + flgT),
-      new THREE.Vector2(rPipeIn, 0),
-    ];
-    const flgMesh = new THREE.Mesh(new THREE.LatheGeometry(flgPts, isLargeDome ? 48 : 36), lowerFlgMat);
-    flgMesh.position.y = pipeEndY - flgT - 0.03 + flgExplode;
-    g.add(flgMesh);
+    // Precision lower flange (drilled bolt holes + tapered hub strictly inside BCD + flat back + RF face)
+    lowerFlg.group.position.y = flangeBaseY + flgExplode;
+    g.add(lowerFlg.group);
 
     const hasCover = p.hasBlindCover || p.isManhole;
     if (hasCover) {
-      // Gasket (垫片)
-      const gask = new THREE.Mesh(
-        createHollowCylinder(rPipeIn, rFlg * 0.88, isLargeDome ? 0.016 : 0.008, isLargeDome ? 44 : 32),
-        gasketMat
-      );
+      const gaskT = isLargeDome ? 0.014 : 0.006;
+      // 3-ring Spiral-Wound Gasket (垫片)
+      const gask = buildSpiralWoundGasketGroup({
+        rInM: rPipeIn,
+        rOutM: lowerFlg.dims.rRfOuterMm * MM_TO_M,
+        thicknessM: gaskT,
+        baseColor: { r: 58, g: 168, b: 96, a: 255 },
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat: createComponentMaterial,
+        segments: isLargeDome ? 72 : 56,
+      });
       gask.position.y = pipeEndY + gaskExplode;
       g.add(gask);
 
-      // Upper mating flange / blind cover (上法兰 / 盲板)
-      const cover = new THREE.Mesh(
-        new THREE.CylinderGeometry(rFlg, rFlg, flgT * 1.08, isLargeDome ? 48 : 36),
-        upperFlgMat
-      );
-      cover.position.y = pipeEndY + (isLargeDome ? 0.016 : 0.008) + flgT * 0.54 + coverExplode;
-      g.add(cover);
+      // Upper mating drilled Blind Cover Flange (上法兰盖 / 盲板, flipped so RF face meets gasket!)
+      const upperCover = buildPrecisionPipeFlange({
+        params: {
+          ...p,
+          flangeThickness: p.flangeThickness * (isLargeDome ? 1.08 : 1.0),
+        },
+        color: upperFlgColor,
+        renderMode,
+        isSelected,
+        clippingPlanes,
+        createMat: createComponentMaterial,
+        overrideStyle: 'BL',
+        segments: isLargeDome ? 72 : 56,
+      });
+      const coverWrap = new THREE.Group();
+      upperCover.group.scale.y = -1;
+      upperCover.group.position.y = upperCover.totalHeightM;
+      coverWrap.add(upperCover.group);
+      const coverBottomY = pipeEndY + gaskT + coverExplode;
+      coverWrap.position.y = coverBottomY;
+      g.add(coverWrap);
 
       // Translucent top dome extension collar on giant DN1800+ domes (matches Ep 14 N1/N2)
       if (isLargeDome) {
         const capCollarH = rPipeOut * 0.42;
         const capCollar = new THREE.Mesh(
-          createHollowCylinder(rPipeIn, rPipeOut * 0.96, capCollarH, 48),
+          createHollowCylinder(rPipeIn, rPipeOut * 0.96, capCollarH, 72),
           topCapMat
         );
-        capCollar.position.y = pipeEndY + 0.016 + flgT * 1.08 + coverExplode + explodeFactor * 0.42;
+        capCollar.position.y = coverBottomY + upperCover.totalHeightM + explodeFactor * 0.42;
         g.add(capCollar);
 
         const capPlate = new THREE.Mesh(
-          new THREE.CylinderGeometry(rPipeOut * 0.96, rPipeOut * 0.96, 0.025, 48),
+          new THREE.CylinderGeometry(rPipeOut * 0.96, rPipeOut * 0.96, 0.025, 72),
           topCapMat
         );
-        capPlate.position.y =
-          pipeEndY + 0.016 + flgT * 1.08 + capCollarH + coverExplode + explodeFactor * 0.42;
+        capPlate.position.y = coverBottomY + upperCover.totalHeightM + capCollarH + explodeFactor * 0.42;
         g.add(capPlate);
 
         tipPosLocal = new THREE.Vector3(
           0,
-          pipeEndY + flgT * 1.15 + capCollarH + coverExplode + explodeFactor * 0.42 + 0.14,
+          coverBottomY + upperCover.totalHeightM + capCollarH + explodeFactor * 0.42 + 0.14,
           0
         );
       }
 
-      // Bolts across both flanges — explode radially outward into a floating circular halo ring!
-      const bolts = createBoltRing(
-        p.flangeOD * 0.88,
-        p.boltCount,
-        pipeEndY + 0.008 + (flgExplode + coverExplode) * 0.45,
-        flgT * (isLargeDome ? 3.2 : 2.9),
-        Math.max(0.008, rFlg * (isLargeDome ? 0.022 : 0.045)),
-        domeBoltMat,
-        explodeFactor * (isLargeDome ? 0.44 : 0.72),
-        0
-      );
+      // Precision Stud + Double-Washer + Double-Hex-Nut Ring clamping both flanges flush!
+      const yLowerBackFace = flangeBaseY + flgExplode + lowerFlg.dims.hubHeightMm * MM_TO_M;
+      const yCoverTopFace = coverBottomY + upperCover.totalHeightM;
+      const bolts = buildPrecisionBoltRing({
+        bcdRMm: lowerFlg.dims.bcdRMm,
+        boltCount: lowerFlg.dims.boltCount,
+        boltDiaMm: lowerFlg.dims.boltDiaMm,
+        yBotFaceM: yLowerBackFace,
+        yTopFaceM: yCoverTopFace,
+        studMat,
+        nutMat,
+        explodeFactor: explodeFactor * (isLargeDome ? 0.42 : 0.68),
+        axialPushDir: 0,
+      });
       g.add(bolts);
 
       // Manhole lifting davit arm + handle loop (matches GHPV Page 12!)
       if (p.isManhole) {
         const postX = rFlg + 0.045;
         const postH = 0.28;
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, postH, 12), boltMat);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, postH, 16), boltMat);
         post.position.set(postX, pipeEndY - 0.04 + postH * 0.5 + flgExplode, 0);
         g.add(post);
 
@@ -1040,28 +1119,18 @@ function buildNozzleOrManhole(
         g.add(bracket);
 
         const arm = new THREE.Mesh(new THREE.BoxGeometry(postX + 0.02, 0.022, 0.028), boltMat);
-        arm.position.set(postX * 0.5, pipeEndY + flgT + 0.09 + coverExplode, 0);
+        arm.position.set(postX * 0.5, coverBottomY + upperCover.totalHeightM + 0.07, 0);
         g.add(arm);
 
-        const eyeBolt = new THREE.Mesh(new THREE.TorusGeometry(0.032, 0.009, 10, 18), boltMat);
-        eyeBolt.position.set(0, pipeEndY + flgT + 0.05 + coverExplode, 0);
+        const eyeBolt = new THREE.Mesh(new THREE.TorusGeometry(0.032, 0.009, 12, 24), boltMat);
+        eyeBolt.position.set(0, coverBottomY + upperCover.totalHeightM + 0.035, 0);
         g.add(eyeBolt);
 
-        tipPosLocal = new THREE.Vector3(0, pipeEndY + flgT + 0.16 + coverExplode, 0);
+        tipPosLocal = new THREE.Vector3(0, coverBottomY + upperCover.totalHeightM + 0.16, 0);
       }
     } else {
-      const bolts = createBoltRing(
-        p.flangeOD * 0.84,
-        p.boltCount,
-        pipeEndY - flgT * 0.5 + flgExplode,
-        flgT * 1.8,
-        Math.max(0.007, rFlg * 0.05),
-        boltMat,
-        explodeFactor * 0.65,
-        1
-      );
-      g.add(bolts);
-      tipPosLocal = new THREE.Vector3(0, pipeEndY + flgT + flgExplode, 0);
+      // Open unconnected process nozzle: shows authentic drilled through bolt holes & machined RF face (NO floating unconnected bolts!)
+      tipPosLocal = new THREE.Vector3(0, pipeEndY + flgExplode + 0.03, 0);
     }
   }
 
@@ -1121,7 +1190,7 @@ function buildSaddle(
   shape.moveTo(-halfBase, -H);
   shape.lineTo(halfBase, -H);
   shape.lineTo(xEdge, yEdge);
-  const arcSteps = 20;
+  const arcSteps = 32;
   for (let i = 1; i <= arcSteps; i++) {
     const t = i / arcSteps;
     const ang = -Math.PI / 2 + wrapHalf * (1 - 2 * t);
@@ -1129,8 +1198,14 @@ function buildSaddle(
   }
   shape.lineTo(-halfBase, -H);
 
-  // Main web plate (腹板)
-  const webGeo = new THREE.ExtrudeGeometry(shape, { depth: webT, bevelEnabled: false });
+  // Main web plate (腹板) with subtle CAD chamfer
+  const webGeo = new THREE.ExtrudeGeometry(shape, {
+    depth: webT,
+    bevelEnabled: true,
+    bevelThickness: 0.002,
+    bevelSize: 0.002,
+    bevelSegments: 2,
+  });
   webGeo.translate(0, 0, -webT / 2);
   const webMesh = new THREE.Mesh(webGeo, mat);
   webMesh.position.y = webDrop;
@@ -1164,7 +1239,7 @@ function buildSaddle(
     R + 0.014,
     R + 0.014,
     padWidth,
-    24,
+    48,
     1,
     true,
     -wrapHalf,
@@ -1340,7 +1415,7 @@ function buildTubeBundle(
 
   const tubeSubGroup = new THREE.Group();
   if (sampled.length > 0) {
-    const tubeGeo = new THREE.CylinderGeometry(tubeR, tubeR, tubeL, 8);
+    const tubeGeo = new THREE.CylinderGeometry(tubeR, tubeR, tubeL, 14);
     const inst = new THREE.InstancedMesh(tubeGeo, tubeMat, sampled.length);
     const dummy = new THREE.Object3D();
     for (let i = 0; i < sampled.length; i++) {
@@ -1361,7 +1436,7 @@ function buildTubeBundle(
     for (let i = 0; i < positiveTubes.length; i += bendStep) {
       const t = positiveTubes[i];
       const bendR = Math.max(tubeR * 2.1, t.y * MM_TO_M);
-      const bendGeo = new THREE.TorusGeometry(bendR, tubeR, 7, 14, Math.PI);
+      const bendGeo = new THREE.TorusGeometry(bendR, tubeR, 12, 22, Math.PI);
       const bendMesh = new THREE.Mesh(bendGeo, tubeMat);
       bendMesh.rotation.y = Math.PI / 2;
       bendMesh.position.set(t.x * MM_TO_M, tubeL, 0);
@@ -1394,42 +1469,87 @@ function buildTubeBundle(
     g.add(rod);
   }
 
-  // Perforated Segmental Baffles (折流板1..24) with authentic circular tube-pass holes
+  // Perforated Segmental Baffles (折流板1..24) with 1:1 tube-aligned circular perforation holes (GB/T 151)
   const baffleCount = Math.max(2, Math.min(24, p.baffleCount));
-  const baffleShape = new THREE.Shape();
   const cutAngle = Math.acos(0.45);
-  baffleShape.absarc(0, 0, baffleR, cutAngle, Math.PI * 2 - cutAngle, false);
-  baffleShape.closePath();
-
-  // Punch crisp tube-pass perforation holes onto the shared baffle ExtrudeGeometry
-  const holeR = Math.max(0.014, baffleR * 0.048);
-  const holePitch = baffleR * 0.24;
   const cutX = baffleR * 0.45;
-  for (let gx = -baffleR * 0.78; gx <= cutX - holeR * 2.1; gx += holePitch) {
-    for (let gy = -baffleR * 0.78; gy <= baffleR * 0.78; gy += holePitch) {
-      if (Math.hypot(gx, gy) + holeR * 1.8 < baffleR) {
-        const hole = new THREE.Path();
-        hole.absarc(gx, gy, holeR, 0, Math.PI * 2, true);
-        baffleShape.holes.push(hole);
+  const holeR = tubeR + 0.0012; // 1.2 mm radial clearance around actual heat-exchanger tube OD
+
+  const buildPerforatedBaffleGeo = (cutRightSide: boolean): THREE.ExtrudeGeometry => {
+    const shape = new THREE.Shape();
+    if (cutRightSide) {
+      // Solid covers x <= +cutX; segmental window open on +X side
+      shape.absarc(0, 0, baffleR, cutAngle, Math.PI * 2 - cutAngle, false);
+    } else {
+      // Solid covers x >= -cutX; segmental window open on -X side
+      shape.absarc(0, 0, baffleR, Math.PI + cutAngle, Math.PI * 3 - cutAngle, false);
+    }
+    shape.closePath();
+
+    // Filter real sampled tube centers that lie cleanly inside this baffle plate
+    const eligible: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < sampled.length; i++) {
+      const tx = sampled[i].x * MM_TO_M;
+      const ty = sampled[i].y * MM_TO_M;
+      const insideCut = cutRightSide
+        ? tx <= cutX - holeR * 1.18
+        : tx >= -cutX + holeR * 1.18;
+      if (insideCut && Math.hypot(tx, ty) + holeR * 1.22 < baffleR) {
+        eligible.push({ x: tx, y: ty });
       }
     }
-  }
 
-  const baffleGeo = new THREE.ExtrudeGeometry(baffleShape, { depth: 0.014, bevelEnabled: false });
-  baffleGeo.rotateX(Math.PI / 2);
+    // Cap maximum extruded holes per plate for responsive triangulation while keeping non-overlapping circles
+    const holeStep = Math.max(1, Math.ceil(eligible.length / 180));
+    const accepted: Array<{ x: number; y: number }> = [];
+    const minCenterDistSq = (holeR * 2.08) * (holeR * 2.08);
+
+    for (let i = 0; i < eligible.length; i += holeStep) {
+      const cand = eligible[i];
+      let overlaps = false;
+      for (let j = 0; j < accepted.length; j++) {
+        const dx = cand.x - accepted[j].x;
+        const dy = cand.y - accepted[j].y;
+        if (dx * dx + dy * dy < minCenterDistSq) {
+          overlaps = true;
+          break;
+        }
+      }
+      if (!overlaps) {
+        accepted.push(cand);
+        const hole = new THREE.Path();
+        hole.absarc(cand.x, cand.y, holeR, 0, Math.PI * 2, true);
+        shape.holes.push(hole);
+      }
+    }
+
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: 0.014,
+      bevelEnabled: false,
+      curveSegments: 24,
+    });
+    // rotateX(+PI/2) maps 2D shape (gx, gy, z) -> 3D (gx, -z, gy), aligning 1:1 with tube (tx, y, ty)
+    geo.rotateX(Math.PI / 2);
+    return geo;
+  };
+
+  const baffleGeoEven = buildPerforatedBaffleGeo(true);
+  const baffleGeoOdd = buildPerforatedBaffleGeo(false);
 
   for (let i = 0; i < baffleCount; i++) {
     const baffleLabel = `折流板${i + 1}`;
     const isThisBaffleSelected = isSelected && selectedSubNode === baffleLabel;
     const baseY = ((i + 1) / (baffleCount + 1)) * tubeL;
     const spreadY = (baseY - tubeL * 0.5) * explodeFactor * 1.05;
-    const bm = new THREE.Mesh(baffleGeo, isThisBaffleSelected ? selectedBaffleMat : baffleMat);
+    const bm = new THREE.Mesh(
+      i % 2 === 0 ? baffleGeoEven : baffleGeoOdd,
+      isThisBaffleSelected ? selectedBaffleMat : baffleMat
+    );
     bm.position.y = baseY + spreadY;
     // Fan alternate baffles sharply up/down into a rhythmic GHPV zigzag stream when exploded
     if (explodeFactor > 0.001) {
       bm.position.x = (i % 2 === 0 ? 1 : -1) * explodeFactor * baffleR * 0.68;
     }
-    bm.rotation.y = i % 2 === 0 ? 0 : Math.PI;
     g.add(bm);
   }
 
@@ -1696,22 +1816,115 @@ export function buildAssembliesScene(
     const placedById = new Map<string, PlacedMainComponent>();
     const explodeOffsetById = new Map<string, number>();
 
+    // Pre-compute axial explode offsets so paired equipment flanges can span one clean continuous bolt set
     for (const pm of placedMains) {
       placedById.set(pm.component.id, pm);
       const midY = ((pm.startPosMm + pm.endPosMm) * 0.5) * MM_TO_M;
       const axialExplode =
         placedMains.length > 1 ? (midY - totalLengthM * 0.5) * explodeFactor * 1.45 : 0;
       explodeOffsetById.set(pm.component.id, axialExplode);
+    }
 
+    // Detect mating equipment_flange pairs (adjacent or separated by 1 gasket/tubesheet)
+    const flangeHints = new Map<string, FlangeJointHint>();
+    const pairedIds = new Set<string>();
+    for (let i = 0; i < placedMains.length; i++) {
+      const a = placedMains[i];
+      if (!a.component.visible || a.component.type !== 'equipment_flange' || pairedIds.has(a.component.id)) {
+        continue;
+      }
+      // Look 1 or 2 slots ahead for a mating partner flange
+      let partnerIdx = -1;
+      for (const delta of [1, 2]) {
+        const j = i + delta;
+        if (j >= placedMains.length) break;
+        const cand = placedMains[j];
+        if (!cand.component.visible) continue;
+        if (delta === 2) {
+          const mid = placedMains[i + 1];
+          if (
+            mid.component.type !== 'gasket' &&
+            mid.component.type !== 'fixed_tubesheet' &&
+            mid.component.type !== 'u_tube_head'
+          ) {
+            break;
+          }
+        }
+        if (cand.component.type === 'equipment_flange' && !pairedIds.has(cand.component.id)) {
+          partnerIdx = j;
+          break;
+        }
+      }
+
+      if (partnerIdx > i) {
+        const b = placedMains[partnerIdx];
+        const pa = a.component.params as EquipmentFlangeParams;
+        const pb = b.component.params as EquipmentFlangeParams;
+        const styleA = normalizeFlangeStyle(pa.flangeType);
+        const styleB = normalizeFlangeStyle(pb.flangeType);
+        const dimsA = computeFlangeDimensions({
+          style: styleA,
+          facing: normalizeFacing(pa.facing, pa.flangeType),
+          boreDiameterMm: pa.dn,
+          pipeODMm: pa.dn + 28,
+          flangeODMm: pa.outerDiameter,
+          flangeThicknessMm: pa.thickness,
+          totalHeightMm: pa.height,
+          boltCircleMm: pa.boltCircle,
+          boltCount: pa.boltCount,
+          boltSpec: pa.boltSpec,
+        });
+        const dimsB = computeFlangeDimensions({
+          style: styleB,
+          facing: normalizeFacing(pb.facing, pb.flangeType),
+          boreDiameterMm: pb.dn,
+          pipeODMm: pb.dn + 28,
+          flangeODMm: pb.outerDiameter,
+          flangeThicknessMm: pb.thickness,
+          totalHeightMm: pb.height,
+          boltCircleMm: pb.boltCircle,
+          boltCount: pb.boltCount,
+          boltSpec: pb.boltSpec,
+        });
+
+        const totalHA = Math.max(dimsA.flangeThicknessMm + dimsA.rfHeightMm, pa.height) * MM_TO_M;
+        const flgTA = dimsA.flangeThicknessMm * MM_TO_M;
+        const rfHA = dimsA.rfHeightMm * MM_TO_M;
+        const yBotFaceM = Math.max(0, totalHA - flgTA - rfHA);
+
+        const relStartBM =
+          (b.startPosMm - a.startPosMm) * MM_TO_M +
+          ((explodeOffsetById.get(b.component.id) ?? 0) - (explodeOffsetById.get(a.component.id) ?? 0));
+        const flgTB = dimsB.flangeThicknessMm * MM_TO_M;
+        const rfHB = dimsB.rfHeightMm * MM_TO_M;
+        const yTopFaceM = relStartBM + rfHB + flgTB;
+
+        flangeHints.set(a.component.id, {
+          boltClampOverride: { yBotFaceM, yTopFaceM },
+          suppressBolts: false,
+          forceFlipped: styleA === 'BL' ? false : undefined,
+        });
+        flangeHints.set(b.component.id, {
+          suppressBolts: true,
+          forceFlipped: styleB === 'BL' ? true : undefined,
+        });
+        pairedIds.add(a.component.id);
+        pairedIds.add(b.component.id);
+      }
+    }
+
+    for (const pm of placedMains) {
       if (!pm.component.visible) continue;
 
+      const axialExplode = explodeOffsetById.get(pm.component.id) ?? 0;
       const isSelected = pm.component.id === selectedId;
       const compGroup = buildMainComponentGroup(
         pm.component,
         renderMode,
         isSelected,
         clippingPlanes,
-        explodeFactor
+        explodeFactor,
+        flangeHints.get(pm.component.id)
       );
       compGroup.position.x = -(pm.eccentricOffsetMm || 0) * MM_TO_M;
       compGroup.position.y = pm.startPosMm * MM_TO_M + axialExplode;

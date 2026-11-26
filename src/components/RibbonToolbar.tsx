@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   FilePlus2,
   FolderOpen,
@@ -9,6 +9,7 @@ import {
   Minus,
   Square,
   X,
+  ClipboardCheck,
 } from 'lucide-react';
 import type { ComponentType } from '../types/vessel';
 import { VESSEL_PRESETS } from '../data/presets';
@@ -55,6 +56,8 @@ interface RibbonToolbarProps {
   activeTab: RibbonTab;
   onTabChange: (tab: RibbonTab) => void;
   activePresetId: string;
+  importedDocLabel?: string | null;
+  activeVesselTitle?: string;
   onSelectPreset: (presetId: string) => void;
   onNewDocument: () => void;
   onOpenDocument: () => void;
@@ -66,6 +69,7 @@ interface RibbonToolbarProps {
   onAddComponent: (type: ComponentType) => void;
   onOpenBom: () => void;
   onOpen2DCad: () => void;
+  onOpenShellUnroll: () => void;
   onOpenWizard: () => void;
   onOpenMaterialLib: () => void;
   onOpenBatchNozzle: () => void;
@@ -73,6 +77,7 @@ interface RibbonToolbarProps {
   onOpenPdmsExport: () => void;
   onOpenInterferenceCheck: () => void;
   onOpenAiModel: () => void;
+  onOpenLifecycle: () => void;
 }
 
 interface RibbonBtnDef {
@@ -86,6 +91,8 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   activeTab,
   onTabChange,
   activePresetId,
+  importedDocLabel = null,
+  activeVesselTitle,
   onSelectPreset,
   onNewDocument,
   onOpenDocument,
@@ -97,6 +104,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   onAddComponent,
   onOpenBom,
   onOpen2DCad,
+  onOpenShellUnroll,
   onOpenWizard,
   onOpenMaterialLib,
   onOpenBatchNozzle,
@@ -104,7 +112,34 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   onOpenPdmsExport,
   onOpenInterferenceCheck,
   onOpenAiModel,
+  onOpenLifecycle,
 }) => {
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!fileMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (fileMenuRef.current && !fileMenuRef.current.contains(e.target as Node)) {
+        setFileMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFileMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [fileMenuOpen]);
+
+  const runFileAction = (fn: () => void) => {
+    setFileMenuOpen(false);
+    fn();
+  };
+
   const startButtons: RibbonBtnDef[] = [
     { id: 'ai_model_start', label: 'AI 建模', icon: <AiModelIcon />, onClick: onOpenAiModel },
     { id: 'import_model_start', label: '导入模型', icon: <FolderOpen className="w-6 h-6 text-[#2563eb]" />, onClick: onOpenDocument },
@@ -122,6 +157,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
     { id: 'preset_sphere', label: '1000m³球罐', icon: <SphereTankIcon />, onClick: () => onSelectPreset('spherical_tank') },
     { id: 'cost_start', label: '造价估算', icon: <CostIcon className="w-7 h-7" />, onClick: onOpenCostEstimate },
     { id: 'pdms_start', label: '导入PDMS', icon: <PdmsIcon className="w-7 h-7" />, onClick: onOpenPdmsExport },
+    { id: 'lifecycle_start', label: '全生命周期', icon: <ClipboardCheck className="w-6 h-6 text-[#0f766e]" />, onClick: onOpenLifecycle },
   ];
 
   const mainButtons: RibbonBtnDef[] = [
@@ -195,6 +231,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   const tankButtons: RibbonBtnDef[] = [
     { id: 'tank_horiz', label: '卧式储罐', icon: <ShellIcon />, onClick: () => onSelectPreset('horizontal') },
     { id: 'tank_vert', label: '立式储罐', icon: <SkirtIcon />, onClick: () => onSelectPreset('vertical') },
+    { id: 'tank_conical', label: '平底锥壳罐', icon: <ConeIcon />, onClick: () => onSelectPreset('conical_vertical') },
     { id: 'tank_shell', label: '罐壁筒节', icon: <ShellIcon />, onClick: () => onAddComponent('shell') },
     { id: 'tank_cone', label: '锥顶盖', icon: <ConeIcon />, onClick: () => onAddComponent('cone') },
     { id: 'tank_ring', label: '抗风圈', icon: <RingIcon />, onClick: () => onAddComponent('stiffening_ring') },
@@ -204,17 +241,21 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   const outputButtons: RibbonBtnDef[] = [
     { id: 'save_model', label: '导出3D模型', icon: <SwOutputIcon />, onClick: onExportStl },
     { id: 'gh2v2d', label: 'GH2V2D出图', icon: <CadOutputIcon />, onClick: onOpen2DCad },
+    { id: 'shell_unroll', label: '展开筒体', icon: <ShellIcon />, onClick: onOpenShellUnroll },
     { id: 'bom', label: '材料表BOM', icon: <ExcelOutputIcon />, onClick: onOpenBom },
     { id: 'cost', label: '造价估算', icon: <CostIcon />, onClick: onOpenCostEstimate },
     { id: 'pdms', label: '导入PDMS', icon: <PdmsIcon />, onClick: onOpenPdmsExport },
+    { id: 'lifecycle_out', label: '全生命周期', icon: <ClipboardCheck className="w-6 h-6 text-[#0f766e]" />, onClick: onOpenLifecycle },
   ];
 
   const toolsButtons: RibbonBtnDef[] = [
     { id: 'tools_clash', label: '干涉检查', icon: <ClashCheckIcon />, onClick: onOpenInterferenceCheck },
+    { id: 'tools_unroll', label: '展开筒体', icon: <ShellIcon />, onClick: onOpenShellUnroll },
     { id: 'tools_ai', label: 'AI 建模', icon: <AiModelIcon />, onClick: onOpenAiModel },
     { id: 'tools_batch', label: '批量管口', icon: <BatchNozzleIcon />, onClick: onOpenBatchNozzle },
     { id: 'tools_wizard', label: '向导式建模', icon: <WizardIcon />, onClick: onOpenWizard },
     { id: 'tools_matlib', label: '材料库', icon: <MaterialLibIcon />, onClick: onOpenMaterialLib },
+    { id: 'tools_lifecycle', label: '全生命周期', icon: <ClipboardCheck className="w-6 h-6 text-[#0f766e]" />, onClick: onOpenLifecycle },
     { id: 'tools_bku', label: 'BKU重沸器', icon: <BkuReboilerIcon />, onClick: () => onSelectPreset('bku_reboiler') },
   ];
 
@@ -266,7 +307,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
           <button
             type="button"
             onClick={onOpenDocument}
-            title="打开高惠模型 / 导入外部三维模型 (.ghpv / .stl / .obj / .glb)"
+            title="打开文件 (Ctrl+O) — 支持 .ghpv / .stp / .igs / .stl / .obj / .glb / .pdf / .dxf"
             aria-label="打开文档"
             className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] transition-colors"
           >
@@ -275,7 +316,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
           <button
             type="button"
             onClick={onSaveDocument}
-            title="保存高惠工程文件 (.ghpv)"
+            title="保存高惠工程文件 (.ghpv) (Ctrl+S)"
             aria-label="保存文档"
             className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] transition-colors"
           >
@@ -292,13 +333,82 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
           </button>
           <div className="h-3.5 w-[1px] bg-[#cbd5e1] mx-1 hidden md:block" />
           <nav aria-label="主菜单" className="hidden md:flex items-center gap-0.5 text-[11px] text-[#334155]">
-            <button
-              type="button"
-              onClick={onOpenWizard}
-              className="px-1.5 py-0.5 rounded-[2px] hover:bg-[#dbeafe] hover:text-[#1d4ed8]"
-            >
-              文件
-            </button>
+            <div ref={fileMenuRef} className="relative">
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={fileMenuOpen}
+                onClick={() => setFileMenuOpen((v) => !v)}
+                className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+                  fileMenuOpen
+                    ? 'bg-[#dbeafe] text-[#1d4ed8] font-medium'
+                    : 'hover:bg-[#dbeafe] hover:text-[#1d4ed8]'
+                }`}
+              >
+                文件
+              </button>
+              {fileMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="文件菜单"
+                  className="absolute left-0 top-full mt-0.5 w-[220px] py-1 bg-white border border-[#94a3b8] shadow-lg rounded-[2px] z-50 text-[11.5px] text-[#1e293b]"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runFileAction(onNewDocument)}
+                    className="w-full px-3 py-1.5 flex items-center justify-between hover:bg-[#eff6ff] hover:text-[#1d4ed8] text-left"
+                  >
+                    <span>新建空白工程</span>
+                    <span className="text-[10px] text-[#64748b] font-mono">New</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runFileAction(onOpenDocument)}
+                    className="w-full px-3 py-1.5 flex items-center justify-between hover:bg-[#eff6ff] hover:text-[#1d4ed8] text-left font-medium"
+                  >
+                    <span>打开模型 / 图纸...</span>
+                    <span className="text-[10px] text-[#64748b] font-mono">Ctrl+O</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runFileAction(onSaveDocument)}
+                    className="w-full px-3 py-1.5 flex items-center justify-between hover:bg-[#eff6ff] hover:text-[#1d4ed8] text-left"
+                  >
+                    <span>保存高惠工程 (.ghpv)</span>
+                    <span className="text-[10px] text-[#64748b] font-mono">Ctrl+S</span>
+                  </button>
+                  <div className="my-1 border-t border-[#e2e8f0]" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runFileAction(onExportStl)}
+                    className="w-full px-3 py-1.5 flex items-center justify-between hover:bg-[#eff6ff] hover:text-[#1d4ed8] text-left"
+                  >
+                    <span>导出 3D 模型 (.stp/.igs/.stl)...</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runFileAction(onOpenPdmsExport)}
+                    className="w-full px-3 py-1.5 flex items-center justify-between hover:bg-[#eff6ff] hover:text-[#1d4ed8] text-left"
+                  >
+                    <span>导出 PDMS 宏 (.mac)...</span>
+                  </button>
+                  <div className="my-1 border-t border-[#e2e8f0]" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runFileAction(onOpenWizard)}
+                    className="w-full px-3 py-1.5 flex items-center justify-between hover:bg-[#eff6ff] hover:text-[#1d4ed8] text-left"
+                  >
+                    <span>向导式建模...</span>
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={onOpenConfig}
@@ -338,8 +448,11 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
         </div>
 
         {/* Center Application Title (matches GHPV V2.1 Ep 15 title bar) */}
-        <div className="text-[12px] font-semibold text-[#1e293b] tracking-wide whitespace-nowrap">
-          GHPV V2.1 — 高惠PV压力容器数字化交付系统
+        <div
+          className="text-[12px] font-semibold text-[#1e293b] tracking-wide whitespace-nowrap truncate max-w-[44vw]"
+          title={`GHPV V2.1 — ${activeVesselTitle || '高惠PV压力容器数字化交付系统'}`}
+        >
+          GHPV V2.1 — {activeVesselTitle || '高惠PV压力容器数字化交付系统'}
         </div>
 
         {/* Right Utility Icons + Window Chrome */}
@@ -402,14 +515,17 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
         {/* Built-in Showcase Vessel Presets */}
         <div className="flex items-center gap-1.5 text-[11px]">
           <label htmlFor="preset-select" className="text-[#475569] whitespace-nowrap">
-            示例设备:
+            {importedDocLabel ? '当前设备:' : '示例设备:'}
           </label>
           <select
             id="preset-select"
             value={activePresetId}
             onChange={(e) => onSelectPreset(e.target.value)}
-            className="h-[19px] px-1.5 text-[11px] bg-white border border-[#cbd5e1] rounded-[2px] text-[#1e293b] focus:outline-none focus:border-[#2563eb]"
+            className="h-[19px] px-1.5 text-[11px] bg-white border border-[#cbd5e1] rounded-[2px] text-[#1e293b] max-w-[240px] focus:outline-none focus:border-[#2563eb]"
           >
+            {importedDocLabel && (
+              <option value="__imported__">已导入: {importedDocLabel}</option>
+            )}
             {VESSEL_PRESETS.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}

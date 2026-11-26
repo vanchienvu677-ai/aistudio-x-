@@ -333,10 +333,15 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: 'GB/T 150.3',
         cuttingSize: `${Math.round(m.unrolledLengthMm)} X ${p.length} X ${p.thickness}`,
         extraProperties: [
+          { label: '筒体类型', value: p.shellKind || '标准筒体' },
           { label: '筒体直径(mm)', value: String(p.diameter) },
+          { label: '筒体外径(mm)', value: String(p.diameter + 2 * p.thickness) },
           { label: '筒体厚度(mm)', value: String(p.thickness) },
           { label: '筒体长度(mm)', value: String(p.length) },
           { label: '展开长度(mm)', value: String(m.unrolledLengthMm) },
+          ...(p.returnBendRadiusMm
+            ? [{ label: '180°弯头半径(mm)', value: String(p.returnBendRadiusMm) }]
+            : []),
         ],
       };
     }
@@ -353,14 +358,21 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         cogMm: m.cogMm,
         specText: `${p.headType}${p.diameter}X${p.nominalThickness}(${m.minFormedThicknessMm})`,
         standardText: p.standard || 'GB/T 25198-2023',
+        cuttingSize: `Ø${m.blankDiameterMm} X ${p.blankThickness}`,
         extraProperties: [
+          { label: '封头型式', value: p.headType },
           { label: '椭圆封头直径', value: String(p.diameter) },
           { label: '椭圆名义厚度', value: String(p.nominalThickness) },
           { label: '最小成型厚度', value: String(m.minFormedThicknessMm) },
           { label: '投料厚度', value: String(p.blankThickness) },
           { label: '直边高度', value: String(p.straightHeight) },
-          { label: '封头标准', value: p.standard || 'GB/T 25198-2023' },
           { label: '曲面高度', value: String(m.crownHeightMm) },
+          { label: '封头总深(mm)', value: String(m.totalDepthMm) },
+          { label: '展开坯料径(mm)', value: String(m.blankDiameterMm) },
+          { label: '成型方法', value: p.formingMethod || '冷冲压法' },
+          { label: '减薄率(%)', value: String(p.thinningRate) },
+          { label: '朝向翻转', value: p.flipped ? '反向(右侧/上部)' : '正向(左侧/下部)' },
+          { label: '封头标准', value: p.standard || 'GB/T 25198-2023' },
         ],
       };
     }
@@ -385,6 +397,7 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         extraProperties: [
           { label: '球冠内径(mm)', value: String(p.diameter) },
           { label: '球封头厚度(mm)', value: String(p.thickness) },
+          { label: '朝向翻转', value: p.flipped ? '反向(右侧/上部)' : '正向(左侧/下部)' },
         ],
       };
     }
@@ -408,6 +421,7 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '结构分带', value: p.zoneStyle },
           { label: '赤道带瓣数', value: String(p.equatorPetals) },
           { label: '温带瓣数', value: String(p.temperatePetals) },
+          { label: '赤道瓣弧长(mm)', value: String(m.equatorPetalArcMm) },
           { label: '焊缝总长(m)', value: String(m.totalWeldLengthM) },
         ],
       };
@@ -426,6 +440,8 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         specText: `DN${p.largeDiameter}/${p.smallDiameter}X${p.thickness} H=${p.totalLength}`,
         standardText: 'GB/T 25198-2023',
         extraProperties: [
+          { label: '锥壳类型', value: p.coneType || '正锥' },
+          { label: '折边型式', value: p.edgeStyle || '双折边' },
           { label: '小端内径', value: String(p.smallDiameter) },
           { label: '大端内径', value: String(p.largeDiameter) },
           { label: '厚度', value: String(p.thickness) },
@@ -433,6 +449,9 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '半顶角(°)', value: String(m.halfApexAngleDeg) },
           { label: '小端折边半径', value: String(p.r1) },
           { label: '大端折边半径', value: String(p.r2) },
+          { label: '小端直边h1(mm)', value: String(p.h1) },
+          { label: '大端直边h2(mm)', value: String(p.h2) },
+          { label: '朝向翻转', value: p.flipped ? '小端→大端' : '大端→小端' },
         ],
       };
     }
@@ -462,14 +481,17 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'NB/T 47023-2012',
         extraProperties: [
           { label: '标准', value: p.standard || 'NB/T 47023-2012' },
-          { label: '公称压力', value: String(p.pn) },
-          { label: '公称直径', value: String(p.dn) },
+          { label: '公称压力', value: `PN${p.pn}` },
+          { label: '公称直径', value: `DN${p.dn}` },
           { label: '法兰类型', value: p.flangeType },
           { label: '法兰密封面', value: p.facing },
           { label: '法兰盘厚度', value: String(p.thickness) },
           { label: '法兰外径', value: String(p.outerDiameter) },
           { label: '螺栓中心圆', value: String(p.boltCircle) },
+          { label: '螺栓数量', value: `${p.boltCount} 个` },
+          { label: '螺栓规格', value: p.boltSpec || 'M24' },
           { label: '法兰总高', value: String(p.height) },
+          { label: '朝向翻转', value: p.flipped ? '反向' : '正向' },
         ],
       };
     }
@@ -490,6 +512,8 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'NB/T 47024-2012',
         extraProperties: [
           { label: '标准号', value: p.standard || 'NB/T 47024-2012' },
+          { label: '公称直径', value: `DN${p.dn}` },
+          { label: '公称压力', value: `PN${p.pn}` },
           { label: '垫片厚度(mm)', value: String(p.thickness) },
           { label: '垫片直径D1', value: String(p.innerDiameter) },
           { label: '垫片直径D2', value: String(p.outerDiameter) },
@@ -519,10 +543,15 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         extraProperties: [
           { label: '裙座类型', value: p.skirtType },
           { label: '裙座内径(mm)', value: String(p.topDiameter) },
+          { label: '裙座底径(mm)', value: String(p.bottomDiameter) },
           { label: '裙座厚度(mm)', value: String(p.thickness) },
           { label: '裙座高度(mm)', value: String(p.height) },
+          { label: '基础环外径/内径(mm)', value: `${p.baseRingOD} / ${p.baseRingID}` },
+          { label: '基础环厚度(mm)', value: String(p.baseRingThickness) },
+          { label: '筋板高度(mm)', value: String(p.gussetHeight) },
           { label: '地脚螺栓规格', value: p.boltSpec },
           { label: '地脚螺栓数量', value: String(p.boltCount) },
+          { label: '检查孔', value: p.hasInspectionHole ? '有' : '无' },
         ],
       };
     }
@@ -545,10 +574,14 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         specText: `Ø${p.outerDiameter}X${p.thickness}`,
         standardText: 'GB/T 151-2014',
         extraProperties: [
+          { label: '管板内径Di(mm)', value: String(p.diameter) },
           { label: '管板外径(mm)', value: String(p.outerDiameter) },
           { label: '管板厚度(mm)', value: String(p.thickness) },
           { label: '螺栓中心圆', value: String(p.bcd) },
           { label: '螺栓数量', value: String(p.boltCount) },
+          { label: '螺栓规格', value: p.boltSpec || 'M24' },
+          { label: '管孔数量', value: String(p.tubeCount) },
+          { label: '换热管外径(mm)', value: String(p.tubeOD) },
         ],
       };
     }
@@ -572,8 +605,11 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'GB/T 16749-2018',
         extraProperties: [
           { label: '公称直径(mm)', value: String(p.dn) },
+          { label: '公称压力', value: `PN${p.pn}` },
           { label: '波数', value: String(p.waveCount) },
           { label: '波高(mm)', value: String(p.waveHeight) },
+          { label: '波距(mm)', value: String(p.wavePitch) },
+          { label: '波纹壁厚(mm)', value: String(p.thickness) },
           { label: '总长(mm)', value: String(p.totalLength) },
         ],
       };
@@ -607,11 +643,13 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           standardText: 'GB/T 150.3',
           extraProperties: [
             { label: '管口符号', value: p.tag },
-            { label: '用途', value: p.purpose },
+            { label: '管口用途', value: p.purpose },
             { label: '集液包内径(mm)', value: String(bootD) },
             { label: '集液包长度(mm)', value: String(bootL) },
             { label: '筒体壁厚(mm)', value: String(t) },
-            { label: '方位角(°)', value: String(p.angleDeg) },
+            { label: '轴向距离(mm)', value: String(p.axialOffset) },
+            { label: '方位角(°)', value: `${p.angleDeg}°` },
+            { label: '法兰标准号', value: p.flangeSpec || 'HG/T 20615' },
           ],
         };
       }
@@ -642,13 +680,52 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         extraProperties: [
           { label: '管口符号', value: p.tag },
           { label: '管口用途', value: p.purpose },
+          { label: '管口类别', value: p.isManhole ? '检修人孔' : '工艺接管' },
+          ...(p.isManhole && p.manholeType ? [{ label: '人孔型式', value: p.manholeType }] : []),
+          { label: '法兰体系', value: p.flangeStandard || 'HG美标' },
           { label: '法兰标准号', value: p.isManhole ? 'HG/T 21524-2014' : p.flangeSpec },
-          { label: '法兰公称直径', value: String(p.dn) },
-          { label: '法兰压力等级', value: String(p.pn) },
-          { label: '接管外径', value: String(p.pipeOD) },
-          { label: '接管壁厚', value: String(p.pipeThickness) },
-          { label: '外伸长度L1', value: String(p.protrusion) },
-          { label: '方位角(°)', value: String(p.angleDeg) },
+          { label: '法兰型式', value: p.flangeType },
+          { label: '法兰公称直径', value: `DN${p.dn}` },
+          { label: '法兰压力等级', value: `PN${p.pn}` },
+          { label: '法兰外径×厚(mm)', value: `${p.flangeOD}×${p.flangeThickness}` },
+          { label: '螺栓数量', value: `${p.boltCount} 个` },
+          { label: '接管外径×壁厚', value: `Ø${p.pipeOD}×${p.pipeThickness} mm` },
+          { label: '接管材质', value: p.pipeMaterial || p.material },
+          { label: '定位类型', value: p.positionType || '径向' },
+          { label: '轴向距离(mm)', value: String(p.axialOffset) },
+          { label: '外伸长度L1(mm)', value: String(p.protrusion) },
+          ...(p.innerProtrusion > 0 ? [{ label: '内伸长度L2(mm)', value: String(p.innerProtrusion) }] : []),
+          { label: '方位角(°)', value: `${p.angleDeg}°` },
+          ...(p.tiltAngleDeg !== undefined && p.tiltAngleDeg !== 90
+            ? [{ label: '与中心线夹角(°)', value: `${p.tiltAngleDeg}°` }]
+            : []),
+          ...(p.eccentricOffset ? [{ label: '偏心距E(mm)', value: String(p.eccentricOffset) }] : []),
+          ...(p.offsetL4 ? [{ label: '偏置距离L4(mm)', value: String(p.offsetL4) }] : []),
+          {
+            label: '补强圈',
+            value: p.hasPad
+              ? `Ø${p.padOD || Math.round(p.pipeOD * 1.65)}×${p.padThickness || 12} mm`
+              : '无',
+          },
+          ...(p.hasPad && p.padMaterial ? [{ label: '补强圈材质', value: p.padMaterial }] : []),
+          { label: '法兰盲盖', value: p.hasBlindCover || p.isManhole ? '有' : '无' },
+          ...(p.hasElbow
+            ? [
+                {
+                  label: '90°弯头',
+                  value: `${p.elbowStandard || 'GB/T 12459-2017'} (${p.elbowType || '长半径'})`,
+                },
+                {
+                  label: '弯头弯曲半径R(mm)',
+                  value: String(p.elbowRadius || Math.round(p.dn * 1.5)),
+                },
+                {
+                  label: '弯头引出长L3(mm)',
+                  value: String(p.elbowRunLength || Math.round(p.dn * 2.6)),
+                },
+                { label: '弯头方位角β(°)', value: `${p.elbowDirDeg ?? 0}°` },
+              ]
+            : []),
         ],
       };
     }
@@ -674,9 +751,15 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'NB/T 47065.1-2018',
         extraProperties: [
           { label: '标准', value: p.standard || 'NB/T 47065.1-2018' },
+          { label: '鞍座型式', value: p.saddleType },
+          { label: '固定滑动', value: p.fixType },
+          { label: '适用筒径(mm)', value: String(p.vesselDiameter) },
+          { label: '鞍座宽度B(mm)', value: String(p.width) },
           { label: '底板长度', value: String(p.baseLength) },
           { label: '底板宽度', value: String(p.baseWidth) },
           { label: '腹板厚度', value: String(p.webThickness) },
+          { label: '筋板数量', value: String(p.ribCount) },
+          { label: '垫板厚度(mm)', value: String(p.padThickness) },
           { label: '鞍座高度H', value: String(p.centerHeight) },
           { label: '包角(°)', value: String(p.wrapAngleDeg) },
           { label: '定位尺寸', value: String(p.axialOffset) },
@@ -702,10 +785,14 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'NB/T 47065.2-2018',
         extraProperties: [
           { label: '支腿标准', value: p.standard || 'NB/T 47065.2-2018' },
+          { label: '支腿型式', value: p.legType },
           { label: '支腿高度', value: String(p.height) },
           { label: '支腿数量', value: String(p.count) },
-          { label: '起始角度', value: String(p.startAngleDeg) },
+          { label: '角钢边宽(mm)', value: String(p.legSectionWidth) },
+          { label: '底板边长(mm)', value: String(p.basePlateSize) },
           { label: '支腿底板厚度', value: String(p.basePlateThickness) },
+          { label: '起始角度', value: String(p.startAngleDeg) },
+          { label: '定位尺寸', value: String(p.axialOffset) },
         ],
       };
     }
@@ -727,9 +814,13 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'NB/T 47065.3-2018',
         extraProperties: [
           { label: '耳座标准', value: p.standard || 'NB/T 47065.3-2018' },
+          { label: '耳座型式', value: p.lugType },
+          { label: '刚性环结构', value: p.isRingLug ? '是' : '否' },
           { label: '耳座数量', value: String(p.count) },
           { label: '耳座高度', value: String(p.height) },
+          { label: '底板尺寸(mm)', value: `${p.baseWidth}×${p.baseLength}` },
           { label: '起始角度', value: String(p.startAngleDeg) },
+          { label: '定位尺寸', value: String(p.axialOffset) },
         ],
       };
     }
@@ -752,7 +843,11 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '型钢类型', value: p.profileType },
           { label: '加强圈位置', value: p.position },
           { label: '型号', value: p.spec },
+          { label: '截面宽度(mm)', value: String(p.width) },
+          { label: '截面厚度(mm)', value: String(p.thickness) },
           { label: '加强圈数量', value: String(p.count) },
+          { label: '起始定位(mm)', value: String(p.axialOffset) },
+          { label: '加强圈间距(mm)', value: String(p.spacing) },
         ],
       };
     }
@@ -773,8 +868,11 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: p.standard || 'HG/T 21574-2018',
         extraProperties: [
           { label: '标准号', value: p.standard || 'HG/T 21574-2018' },
-          { label: '轴耳外径', value: String(p.trunnionOD) },
-          { label: '轴耳长度', value: String(p.length) },
+          { label: '轴耳型号', value: p.spec },
+          { label: '轴耳外径(mm)', value: String(p.trunnionOD) },
+          { label: '轴耳长度(mm)', value: String(p.length) },
+          { label: '定位距离(mm)', value: String(p.axialOffset) },
+          { label: '方位角(°)', value: `${p.angleDeg}°` },
         ],
       };
     }
@@ -797,6 +895,8 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '塔盘类型', value: p.trayType },
           { label: '塔盘数量', value: String(p.count) },
           { label: '塔盘间距(mm)', value: String(p.spacing) },
+          { label: '起始标高(mm)', value: String(p.startOffset) },
+          { label: '塔盘厚度(mm)', value: String(p.thickness) },
         ],
       };
     }
@@ -817,6 +917,7 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         extraProperties: [
           { label: '填料类型', value: p.packingType },
           { label: '填料层高(mm)', value: String(p.height) },
+          { label: '起始标高(mm)', value: String(p.startOffset) },
         ],
       };
     }
@@ -840,6 +941,8 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '吊重(kg)', value: String(p.capacityKg) },
           { label: '吊臂长S(mm)', value: String(p.armLength) },
           { label: '吊柱高L(mm)', value: String(p.poleHeight) },
+          { label: '立柱管径(mm)', value: String(p.pipeOD) },
+          { label: '方位角(°)', value: `${p.angleDeg}°` },
         ],
       };
     }
@@ -861,6 +964,7 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '安装方式', value: p.installType },
           { label: '标准号', value: p.standard || 'HG/T 21618-1998' },
           { label: '网块厚度(mm)', value: String(p.thickness) },
+          { label: '安装标高(mm)', value: String(p.startOffset) },
         ],
       };
     }
@@ -878,6 +982,7 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         standardText: 'NB/T 47015',
         extraProperties: [
           { label: '坡口形式', value: p.grooveType },
+          { label: '焊缝宽度(mm)', value: String(p.width) },
           { label: '定位距离(mm)', value: String(p.axialOffset) },
         ],
       };
@@ -900,6 +1005,8 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '宽度(mm)', value: String(p.width) },
           { label: '高度(mm)', value: String(p.height) },
           { label: '厚度(mm)', value: String(p.thickness) },
+          { label: '定位距离(mm)', value: String(p.axialOffset) },
+          { label: '方位角(°)', value: `${p.angleDeg}°` },
         ],
       };
     }
@@ -924,12 +1031,20 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         specText: `Ø${p.tubeOD}X${p.tubeThickness} L=${p.tubeLength} (${layout.totalCount}根)`,
         standardText: 'GB/T 151-2014',
         extraProperties: [
+          { label: '换热管型式', value: p.tubeType || '直管' },
+          { label: '壳体内径(mm)', value: String(p.shellDiameter) },
+          { label: '布管限定圆DL(mm)', value: String(p.outerLimitDiameter) },
           { label: '布管根数', value: String(layout.totalCount) },
           { label: '换热管规格', value: `Ø${p.tubeOD}×${p.tubeThickness}` },
           { label: '管间距S(mm)', value: String(p.tubePitch) },
           { label: '排列方式', value: p.pattern },
+          { label: '管程数', value: `${p.passes} 程` },
+          { label: '换热管长(mm)', value: String(p.tubeLength) },
           { label: '折流板数量', value: String(p.baffleCount) },
           { label: '换热面积(m²)', value: String(heatAreaM2.toFixed(2)) },
+          ...(p.verticalOffsetMm
+            ? [{ label: 'BKU下移偏心(mm)', value: String(p.verticalOffsetMm) }]
+            : []),
         ],
       };
     }
@@ -981,7 +1096,9 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
           { label: '平台标高(mm)', value: String(p.elevationMm) },
           { label: '平台宽度(mm)', value: String(p.widthMm) },
           { label: '包角(°)', value: String(p.angleSpanDeg) },
+          { label: '起始方位角(°)', value: `${p.startAngleDeg}°` },
           { label: '直梯高度(mm)', value: String(p.ladderHeightMm) },
+          { label: '安全护笼', value: p.hasCage ? '带安全护笼' : '无护笼' },
         ],
       };
     }
@@ -1280,6 +1397,15 @@ export function computeComponentMetrics(component: VesselComponent): ComputedCom
         }
       }
 
+      const hasAxialField = extraProperties.some((item) => /定位|标高/.test(item.label));
+      if (!hasAxialField) {
+        extraProperties.push({ label: '轴向定位(mm)', value: String(p.axialOffset || 0) });
+      }
+      const hasAngleField = extraProperties.some((item) => /方位角/.test(item.label));
+      if (!hasAngleField) {
+        extraProperties.push({ label: '方位角(°)', value: `${p.angleDeg || 0}°` });
+      }
+
       const weightKg = volumeM3 * rho * 1000;
       return {
         weightKg: Number(Math.max(0.8, weightKg).toFixed(2)),
@@ -1409,6 +1535,106 @@ export function layoutAssemblyMainComponents(
   }
 
   return placed;
+}
+
+export interface AssemblyAttachmentLink {
+  component: VesselComponent;
+  parentId: string | null;
+  parentName: string;
+  isOrphan: boolean;
+}
+
+export interface AssemblyPointSummary {
+  assemblyId: string;
+  assemblyName: string;
+  mainCount: number;
+  attachmentCount: number;
+  hiddenCount: number;
+  orphanCount: number;
+  totalAxialLengthMm: number;
+  maxOuterDiameterMm: number;
+  weightKg: number;
+  internalVolumeM3: number;
+  outerAreaM2: number;
+  axialCogMm: number;
+  placedMains: PlacedMainComponent[];
+  attachmentLinks: AssemblyAttachmentLink[];
+}
+
+/**
+ * Compute per-assembly engineering summary (length, max OD, weight, volume, outer area,
+ * mass-weighted axial COG, ordered main component coordinates, and attachment mount audit).
+ */
+export function computeAssemblySummary(assembly: AssemblyPoint): AssemblyPointSummary {
+  const placedMains = layoutAssemblyMainComponents(assembly);
+  const placedById = new Map<string, PlacedMainComponent>(
+    placedMains.map((pm) => [pm.component.id, pm])
+  );
+  const attachments = assembly.components.filter((c) => c.category === 'attachment');
+
+  let weightKg = 0;
+  let internalVolumeM3 = 0;
+  let outerAreaM2 = 0;
+  let weightedCogSum = 0;
+  let hiddenCount = 0;
+
+  for (const pm of placedMains) {
+    if (!pm.component.visible) hiddenCount += 1;
+    const m = computeComponentMetrics(pm.component);
+    weightKg += m.weightKg;
+    internalVolumeM3 += m.internalVolumeM3;
+    outerAreaM2 += m.outerAreaM2;
+    weightedCogSum += m.weightKg * (pm.startPosMm + m.cogMm);
+  }
+
+  let orphanCount = 0;
+  const attachmentLinks: AssemblyAttachmentLink[] = [];
+  for (const att of attachments) {
+    if (!att.visible) hiddenCount += 1;
+    const parent = att.parentId ? placedById.get(att.parentId) : undefined;
+    const isOrphan = !parent;
+    if (isOrphan) orphanCount += 1;
+    attachmentLinks.push({
+      component: att,
+      parentId: parent ? parent.component.id : null,
+      parentName: parent ? parent.component.name : '未挂载',
+      isOrphan,
+    });
+
+    const m = computeComponentMetrics(att);
+    weightKg += m.weightKg;
+    internalVolumeM3 += m.internalVolumeM3;
+    outerAreaM2 += m.outerAreaM2;
+    const parentStart = parent ? parent.startPosMm : 0;
+    weightedCogSum += m.weightKg * (parentStart + m.cogMm);
+  }
+
+  const totalAxialLengthMm =
+    placedMains.length > 0
+      ? Math.round(placedMains[placedMains.length - 1].endPosMm)
+      : 0;
+  const maxOuterDiameterMm =
+    placedMains.length > 0
+      ? Math.round(Math.max(...placedMains.map((pm) => pm.outerRadiusMm * 2)))
+      : 0;
+  const axialCogMm = weightKg > 0 ? Number((weightedCogSum / weightKg).toFixed(1)) : 0;
+
+  return {
+    assemblyId: assembly.id,
+    assemblyName: assembly.name,
+    mainCount: placedMains.length,
+    attachmentCount: attachments.length,
+    hiddenCount,
+    orphanCount,
+    totalAxialLengthMm,
+    maxOuterDiameterMm,
+    weightKg: Number(weightKg.toFixed(1)),
+    internalVolumeM3: Number(internalVolumeM3.toFixed(4)),
+    outerAreaM2: Number(outerAreaM2.toFixed(3)),
+    axialCogMm,
+    placedMains,
+    attachmentLinks,
+  };
 }
 
 /**
@@ -2733,4 +2959,675 @@ export function buildVesselFromAiSpec(parsed: AiParsedVesselSpec): {
     assemblies,
   };
 }
+
+export interface AutoArrangeResult {
+  assemblies: AssemblyPoint[];
+  movedAssemblyCount: number;
+  reorderedComponentCount: number;
+  spacingAdjustedCount: number;
+  changed: boolean;
+  summary: string;
+}
+
+function roundToStep(value: number, step = 50): number {
+  return Math.round(value / step) * step;
+}
+
+function getMainSpatialZone(comp: VesselComponent): number {
+  if (comp.type === 'skirt') return 0;
+  if (comp.type === 'elliptical_head' || comp.type === 'spherical_head') {
+    const flipped = Boolean((comp.params as { flipped?: boolean }).flipped);
+    return flipped ? 3 : 1;
+  }
+  return 2;
+}
+
+function getAttachmentAxialOffset(comp: VesselComponent): number {
+  const p = comp.params as unknown as Record<string, unknown>;
+  if (typeof p.axialOffset === 'number' && Number.isFinite(p.axialOffset)) return p.axialOffset;
+  if (typeof p.startOffset === 'number' && Number.isFinite(p.startOffset)) return p.startOffset;
+  if (typeof p.elevationMm === 'number' && Number.isFinite(p.elevationMm)) return p.elevationMm;
+  return 0;
+}
+
+function getAttachmentAngleDeg(comp: VesselComponent): number {
+  const p = comp.params as unknown as Record<string, unknown>;
+  if (typeof p.angleDeg === 'number' && Number.isFinite(p.angleDeg)) return ((p.angleDeg % 360) + 360) % 360;
+  if (typeof p.startAngleDeg === 'number' && Number.isFinite(p.startAngleDeg)) {
+    return ((p.startAngleDeg % 360) + 360) % 360;
+  }
+  return 0;
+}
+
+function angularDeltaDeg(a: number, b: number): number {
+  const diff = Math.abs((((a - b) % 360) + 360) % 360);
+  return diff > 180 ? 360 - diff : diff;
+}
+
+function optimizeSingleAssemblyComponents(ap: AssemblyPoint): {
+  components: VesselComponent[];
+  reorderedCount: number;
+  spacingAdjustedCount: number;
+} {
+  const origMains = ap.components.filter((c) => c.category === 'main');
+  const origAttachments = ap.components.filter((c) => c.category === 'attachment');
+
+  let reorderedCount = 0;
+  let spacingAdjustedCount = 0;
+
+  // 1. Order main components physically along vessel axis: skirt -> start head -> body -> end head
+  const indexedMains = origMains.map((c, idx) => ({ comp: c, zone: getMainSpatialZone(c), idx }));
+  const sortedMains = [...indexedMains].sort((a, b) => a.zone - b.zone || a.idx - b.idx);
+  sortedMains.forEach((item, newIdx) => {
+    if (item.idx !== newIdx) reorderedCount++;
+  });
+  const orderedMains = sortedMains.map((item) => item.comp);
+
+  // Compute placed axial spans after main ordering
+  const placedMains = layoutAssemblyMainComponents({ ...ap, components: orderedMains });
+  const placedById = new Map<string, PlacedMainComponent>();
+  const placedOrderById = new Map<string, number>();
+  placedMains.forEach((pm, idx) => {
+    placedById.set(pm.component.id, pm);
+    placedOrderById.set(pm.component.id, idx);
+  });
+
+  const primaryShell =
+    orderedMains.find((c) => c.type === 'shell' || c.type === 'spherical_tank') || orderedMains[0];
+
+  // 2. Normalize attachment parent links & resolve spacing overlaps per parent
+  const byParent = new Map<string, VesselComponent[]>();
+  for (const att of origAttachments) {
+    if ((!att.parentId || !placedById.has(att.parentId)) && primaryShell) {
+      att.parentId = primaryShell.id;
+      spacingAdjustedCount++;
+    }
+    const key = att.parentId || '__root__';
+    const list = byParent.get(key) || [];
+    list.push(att);
+    byParent.set(key, list);
+  }
+
+  for (const [parentId, group] of byParent.entries()) {
+    const parent = placedById.get(parentId);
+    if (!parent || parent.axialLengthMm <= 0) continue;
+    const len = parent.axialLengthMm;
+    const isShellLike = parent.component.type === 'shell' || parent.component.type === 'boot_shell';
+
+    // 2a. Optimize horizontal twin saddle span (NB/T 47065.1 recommended 0.2L & 0.8L) when cramped/out-of-bounds
+    if (isShellLike && ap.orientation === 'horizontal') {
+      const saddles = group.filter((c) => c.type === 'saddle');
+      if (saddles.length === 2) {
+        saddles.sort(
+          (a, b) => (a.params as SaddleParams).axialOffset - (b.params as SaddleParams).axialOffset
+        );
+        const s0 = saddles[0].params as SaddleParams;
+        const s1 = saddles[1].params as SaddleParams;
+        const span = Math.abs(s1.axialOffset - s0.axialOffset);
+        const outOfBounds = s0.axialOffset < len * 0.08 || s1.axialOffset > len * 0.92;
+        if (span < len * 0.35 || outOfBounds) {
+          const target0 = roundToStep(len * 0.2, 10);
+          const target1 = roundToStep(len * 0.8, 10);
+          if (s0.axialOffset !== target0) {
+            s0.axialOffset = target0;
+            spacingAdjustedCount++;
+          }
+          if (s1.axialOffset !== target1) {
+            s1.axialOffset = target1;
+            spacingAdjustedCount++;
+          }
+        }
+      }
+    }
+
+    // 2b. Resolve colliding nozzles/manholes on the same circumferential band of a shell
+    if (isShellLike) {
+      const nozzles = group.filter((c) => c.type === 'nozzle_manhole');
+      if (nozzles.length >= 2) {
+        nozzles.sort(
+          (a, b) =>
+            (a.params as NozzleManholeParams).axialOffset -
+            (b.params as NozzleManholeParams).axialOffset
+        );
+        for (let i = 1; i < nozzles.length; i++) {
+          const prevP = nozzles[i - 1].params as NozzleManholeParams;
+          const currP = nozzles[i].params as NozzleManholeParams;
+          if (angularDeltaDeg(prevP.angleDeg || 0, currP.angleDeg || 0) < 38) {
+            const rPrev = Math.max((prevP.flangeOD || prevP.pipeOD) / 2, prevP.pipeOD / 2 + 30);
+            const rCurr = Math.max((currP.flangeOD || currP.pipeOD) / 2, currP.pipeOD / 2 + 30);
+            const minGap = Math.round(rPrev + rCurr + 80);
+            if (currP.axialOffset - prevP.axialOffset < minGap) {
+              const margin = Math.min(Math.round(len * 0.12), Math.max(120, Math.round(rCurr + 40)));
+              const candidate = Math.min(len - margin, prevP.axialOffset + minGap);
+              const nextOffset = roundToStep(Math.max(margin, candidate), 10);
+              if (nextOffset !== currP.axialOffset) {
+                currP.axialOffset = nextOffset;
+                spacingAdjustedCount++;
+              }
+            }
+          }
+        }
+      }
+
+      // 2c. Clamp out-of-range shell attachment axial offsets inside parent span
+      for (const att of group) {
+        const p = att.params as unknown as Record<string, unknown>;
+        if (typeof p.axialOffset === 'number' && Number.isFinite(p.axialOffset)) {
+          const clamped = Math.max(0, Math.min(len, p.axialOffset));
+          if (clamped !== p.axialOffset) {
+            p.axialOffset = Math.round(clamped);
+            spacingAdjustedCount++;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Order attachments spatially by parent axial order -> axial offset -> azimuth angle
+  const indexedAttachments = origAttachments.map((c, idx) => ({
+    comp: c,
+    parentRank: c.parentId && placedOrderById.has(c.parentId) ? placedOrderById.get(c.parentId)! : 9999,
+    axial: getAttachmentAxialOffset(c),
+    angle: getAttachmentAngleDeg(c),
+    idx,
+  }));
+  const sortedAttachments = [...indexedAttachments].sort(
+    (a, b) => a.parentRank - b.parentRank || a.axial - b.axial || a.angle - b.angle || a.idx - b.idx
+  );
+  sortedAttachments.forEach((item, newIdx) => {
+    if (item.idx !== newIdx) reorderedCount++;
+  });
+  const orderedAttachments = sortedAttachments.map((item) => item.comp);
+
+  return {
+    components: [...orderedMains, ...orderedAttachments],
+    reorderedCount,
+    spacingAdjustedCount,
+  };
+}
+
+interface AssemblyEnvelope {
+  totalLengthMm: number;
+  maxOuterRadiusMm: number;
+  maxOuterDiameterMm: number;
+  protrusionAllowanceMm: number;
+  footprintWidthXMm: number;
+  footprintHeightZMm: number;
+  isEmpty: boolean;
+}
+
+function measureAssemblyEnvelope(ap: AssemblyPoint): AssemblyEnvelope {
+  const placedMains = layoutAssemblyMainComponents(ap);
+  const isEmpty = ap.components.length === 0;
+  const totalLengthMm =
+    placedMains.length > 0 ? Math.max(400, placedMains[placedMains.length - 1].endPosMm) : 1600;
+  const maxOuterRadiusMm =
+    placedMains.length > 0
+      ? Math.max(200, ...placedMains.map((pm) => pm.outerRadiusMm))
+      : 500;
+  const maxOuterDiameterMm = maxOuterRadiusMm * 2;
+
+  let protrusionAllowanceMm = 280;
+  for (const c of ap.components) {
+    if (c.type === 'nozzle_manhole') {
+      const p = c.params as NozzleManholeParams;
+      protrusionAllowanceMm = Math.max(protrusionAllowanceMm, (p.protrusion || 220) + (p.flangeThickness || 26));
+    } else if (c.type === 'saddle') {
+      const p = c.params as SaddleParams;
+      protrusionAllowanceMm = Math.max(protrusionAllowanceMm, Math.max(260, p.centerHeight - maxOuterRadiusMm + 160));
+    } else if (c.type === 'ladder_platform') {
+      const p = c.params as LadderPlatformParams;
+      protrusionAllowanceMm = Math.max(protrusionAllowanceMm, Math.min(950, p.widthMm || 800));
+    }
+  }
+  protrusionAllowanceMm = Math.min(1100, protrusionAllowanceMm);
+
+  const hasReturnElbow = ap.components.some(
+    (c) => c.name.includes('弯头') || (c.subNodes || []).some((sn) => sn.includes('弯头'))
+  );
+  const horizEndAllowanceMm = hasReturnElbow ? maxOuterDiameterMm : Math.round(maxOuterRadiusMm * 0.45);
+
+  const footprintWidthXMm =
+    ap.orientation === 'horizontal'
+      ? totalLengthMm + horizEndAllowanceMm
+      : maxOuterDiameterMm + protrusionAllowanceMm * 2;
+  const footprintHeightZMm =
+    ap.orientation === 'horizontal' ? maxOuterDiameterMm + protrusionAllowanceMm * 2 : totalLengthMm;
+
+  return {
+    totalLengthMm,
+    maxOuterRadiusMm,
+    maxOuterDiameterMm,
+    protrusionAllowanceMm,
+    footprintWidthXMm,
+    footprintHeightZMm,
+    isEmpty,
+  };
+}
+
+/**
+ * One-click automatic spatial rearrangement for all assembly points and their internal components.
+ * - Optimizes intra-assembly component ordering (skirt -> start head -> shells -> end head; attachments sorted by parent & axial offset)
+ * - Resolves cramped nozzle/saddle spacing on the same shell
+ * - Computes collision-free inter-assembly (X, Z) coordinates based on true 1:1 equipment dimensions & engineering clearance
+ * Pure and immutable: never mutates the input array so callers can snapshot prior state for instant Undo.
+ */
+export function autoArrangeAssemblies(assemblies: AssemblyPoint[]): AutoArrangeResult {
+  if (!assemblies || assemblies.length === 0) {
+    return {
+      assemblies: [],
+      movedAssemblyCount: 0,
+      reorderedComponentCount: 0,
+      spacingAdjustedCount: 0,
+      changed: false,
+      summary: '当前工程尚无装配点，无需重排',
+    };
+  }
+
+  const beforeJson = JSON.stringify(assemblies);
+  const cloned = JSON.parse(beforeJson) as AssemblyPoint[];
+
+  let reorderedComponentCount = 0;
+  let spacingAdjustedCount = 0;
+
+  // Step 1: Optimize internal component order and attachment spacing inside every assembly point
+  const enriched = cloned.map((ap, origIndex) => {
+    const opt = optimizeSingleAssemblyComponents(ap);
+    ap.components = opt.components;
+    reorderedComponentCount += opt.reorderedCount;
+    spacingAdjustedCount += opt.spacingAdjustedCount;
+    const env = measureAssemblyEnvelope(ap);
+    return { ap, env, origIndex, origX: ap.x, origZ: ap.z };
+  });
+
+  let movedAssemblyCount = 0;
+
+  if (enriched.length === 1) {
+    // Single assembly point: normalize cleanly to workspace origin (0, 0) if shifted
+    const only = enriched[0];
+    if (only.ap.x !== 0 || only.ap.z !== 0) {
+      only.ap.x = 0;
+      only.ap.z = 0;
+      movedAssemblyCount = 1;
+    }
+  } else {
+    const populated = enriched.filter((item) => !item.env.isEmpty);
+    const allPopulatedHorizontal =
+      populated.length > 0 && populated.every((item) => item.ap.orientation === 'horizontal');
+
+    // Sort: populated equipment first (by equipment envelope volume / outer diameter), empty assembly points last
+    enriched.sort((a, b) => {
+      if (a.env.isEmpty !== b.env.isEmpty) return a.env.isEmpty ? 1 : -1;
+      if (allPopulatedHorizontal) {
+        const dDiff = Math.round(b.env.maxOuterDiameterMm - a.env.maxOuterDiameterMm);
+        if (Math.abs(dDiff) > 20) return dDiff;
+      }
+      const volA = a.env.maxOuterDiameterMm * a.env.maxOuterDiameterMm * a.env.totalLengthMm;
+      const volB = b.env.maxOuterDiameterMm * b.env.maxOuterDiameterMm * b.env.totalLengthMm;
+      if (Math.abs(volB - volA) > Math.max(volA, volB) * 0.05) {
+        return volB - volA;
+      }
+      const dDiff = Math.round(b.env.maxOuterDiameterMm - a.env.maxOuterDiameterMm);
+      if (Math.abs(dDiff) > 20) return dDiff;
+      return a.origIndex - b.origIndex;
+    });
+
+    if (allPopulatedHorizontal) {
+      // Stacked / parallel horizontal vessels (e.g., 重叠式换热器): stack vertically along Z with exact radial + nozzle/saddle clearance
+      let currentZ = 0;
+      for (let i = 0; i < enriched.length; i++) {
+        const item = enriched[i];
+        let nextX = 0;
+        let nextZ = 0;
+        if (i === 0) {
+          nextX = 0;
+          nextZ = 0;
+          currentZ = 0;
+        } else {
+          const prev = enriched[i - 1];
+          const prevTop =
+            prev.env.maxOuterRadiusMm + Math.min(460, Math.max(240, prev.env.protrusionAllowanceMm * 0.65));
+          const currBot =
+            item.env.maxOuterRadiusMm + Math.min(540, Math.max(280, item.env.protrusionAllowanceMm * 0.72));
+          const clearance = Math.max(
+            380,
+            Math.round(Math.max(prev.env.maxOuterRadiusMm, item.env.maxOuterRadiusMm) * 0.35)
+          );
+          currentZ = roundToStep(currentZ + prevTop + currBot + clearance, 50);
+          nextX = 0;
+          nextZ = currentZ;
+        }
+
+        if (item.ap.x !== nextX || item.ap.z !== nextZ || item.origIndex !== i) {
+          movedAssemblyCount++;
+        }
+        item.ap.x = nextX;
+        item.ap.z = nextZ;
+      }
+    } else {
+      // Vertical vessels or mixed plant row: arrange side-by-side along +X with engineering walkway spacing & flush ground datum Z
+      const first = enriched[0];
+      const refBaseY =
+        first.ap.orientation === 'vertical'
+          ? -first.env.totalLengthMm / 2
+          : -first.env.maxOuterRadiusMm;
+
+      let currentX = 0;
+      for (let i = 0; i < enriched.length; i++) {
+        const item = enriched[i];
+        let nextX = 0;
+        let nextZ = 0;
+
+        if (i === 0) {
+          nextX = 0;
+          nextZ = 0;
+          currentX = 0;
+        } else {
+          const prev = enriched[i - 1];
+          const walkwayClearance = Math.max(
+            900,
+            Math.round(Math.max(prev.env.maxOuterDiameterMm, item.env.maxOuterDiameterMm) * 0.55)
+          );
+          currentX = roundToStep(
+            currentX + prev.env.footprintWidthXMm / 2 + item.env.footprintWidthXMm / 2 + walkwayClearance,
+            50
+          );
+          nextX = currentX;
+
+          const localBaseY =
+            item.ap.orientation === 'vertical'
+              ? -item.env.totalLengthMm / 2
+              : -item.env.maxOuterRadiusMm;
+          nextZ = roundToStep(refBaseY - localBaseY, 50);
+        }
+
+        if (item.ap.x !== nextX || item.ap.z !== nextZ || item.origIndex !== i) {
+          movedAssemblyCount++;
+        }
+        item.ap.x = nextX;
+        item.ap.z = nextZ;
+      }
+    }
+  }
+
+  const nextAssemblies = enriched.map((e) => e.ap);
+  const changed = JSON.stringify(nextAssemblies) !== beforeJson;
+
+  let summary: string;
+  if (!changed) {
+    summary = '当前装配点坐标与内部组件顺序已处于最优空间布局，无需调整';
+  } else {
+    const parts: string[] = [];
+    if (movedAssemblyCount > 0) parts.push(`重排 ${movedAssemblyCount} 个装配点空间位置`);
+    if (reorderedComponentCount > 0) parts.push(`优化 ${reorderedComponentCount} 项组件排列顺序`);
+    if (spacingAdjustedCount > 0) parts.push(`校准 ${spacingAdjustedCount} 处组件安装间距`);
+    summary = `一键自动重排完成：${parts.join('，')}（可点击“撤销”或按 Ctrl+Z 恢复）`;
+  }
+
+  return {
+    assemblies: nextAssemblies,
+    movedAssemblyCount,
+    reorderedComponentCount,
+    spacingAdjustedCount,
+    changed,
+    summary,
+  };
+}
+
+export interface ShellUnrollOpening {
+  id: string;
+  tag: string;
+  purpose: string;
+  dn: number;
+  pipeODMm: number;
+  cutoutDiaMm: number;
+  padOuterDiaMm: number | null;
+  angleDeg: number;
+  arcXMm: number;
+  axialYMm: number;
+  weldSeamClearanceMm: number;
+  weldSeamWarning: boolean;
+}
+
+export interface ShellUnrollSheet {
+  shellId: string;
+  shellName: string;
+  assemblyId: string;
+  assemblyName: string;
+  orientation: 'horizontal' | 'vertical';
+  innerDiameterMm: number;
+  thicknessMm: number;
+  meanDiameterMm: number;
+  developedWidthMm: number;
+  innerCircumferenceMm: number;
+  lengthMm: number;
+  plateAreaM2: number;
+  plateWeightKg: number;
+  material: string;
+  openings: ShellUnrollOpening[];
+  weldWarningCount: number;
+}
+
+/**
+ * Compute 1:1 cylindrical shell plate unroll (展开下料图) and nozzle opening coordinates
+ * along the neutral-axis circumference W = π × (Di + δ) per GB/T 150 & NB/T 47015.
+ */
+export function computeShellUnrollData(assemblies: AssemblyPoint[]): ShellUnrollSheet[] {
+  const sheets: ShellUnrollSheet[] = [];
+
+  for (const ap of assemblies) {
+    const nozzles = ap.components.filter(
+      (c) => c.visible && c.type === 'nozzle_manhole'
+    );
+
+    for (const comp of ap.components) {
+      if (!comp.visible || comp.type !== 'shell') continue;
+      const p = comp.params as ShellParams;
+      if (p.returnBendRadiusMm && p.returnBendRadiusMm > 0) continue;
+
+      const innerDiameterMm = Math.max(50, p.diameter);
+      const thicknessMm = Math.max(2, p.thickness);
+      const lengthMm = Math.max(50, p.length);
+      const meanDiameterMm = innerDiameterMm + thicknessMm;
+      const developedWidthMm = Math.round(Math.PI * meanDiameterMm * 10) / 10;
+      const innerCircumferenceMm = Math.round(Math.PI * innerDiameterMm * 10) / 10;
+      const plateAreaM2 = Math.round((developedWidthMm * lengthMm) / 1e6 * 1000) / 1000;
+      const density = p.density > 0 ? p.density : 7.85;
+      const plateWeightKg =
+        Math.round(((developedWidthMm * lengthMm * thicknessMm) / 1e6) * density * 10) / 10;
+
+      const openings: ShellUnrollOpening[] = nozzles
+        .filter((n) => n.parentId === comp.id)
+        .map((n) => {
+          const np = n.params as NozzleManholeParams;
+          const normDeg = ((np.angleDeg % 360) + 360) % 360;
+          const arcXMm = Math.round((normDeg / 360) * developedWidthMm * 10) / 10;
+          const axialYMm = Math.round(Math.max(0, Math.min(lengthMm, np.axialOffset)) * 10) / 10;
+          const pipeODMm = Math.max(18, np.pipeOD || np.dn + 10);
+          const cutoutDiaMm = Math.round((pipeODMm + 2) * 10) / 10;
+          const padOuterDiaMm = np.hasPad
+            ? Math.round((np.padOD && np.padOD > pipeODMm ? np.padOD : pipeODMm * 1.65) * 10) / 10
+            : null;
+          const distToSeamCenter = Math.min(arcXMm, developedWidthMm - arcXMm);
+          const weldSeamClearanceMm =
+            Math.round((distToSeamCenter - cutoutDiaMm / 2) * 10) / 10;
+
+          return {
+            id: n.id,
+            tag: np.tag || n.name,
+            purpose: np.purpose || '接管',
+            dn: np.dn,
+            pipeODMm,
+            cutoutDiaMm,
+            padOuterDiaMm,
+            angleDeg: Math.round(normDeg * 10) / 10,
+            arcXMm,
+            axialYMm,
+            weldSeamClearanceMm,
+            weldSeamWarning: weldSeamClearanceMm < 50,
+          };
+        })
+        .sort((a, b) => a.axialYMm - b.axialYMm || a.arcXMm - b.arcXMm);
+
+      sheets.push({
+        shellId: comp.id,
+        shellName: comp.name,
+        assemblyId: ap.id,
+        assemblyName: ap.name,
+        orientation: ap.orientation,
+        innerDiameterMm,
+        thicknessMm,
+        meanDiameterMm,
+        developedWidthMm,
+        innerCircumferenceMm,
+        lengthMm,
+        plateAreaM2,
+        plateWeightKg,
+        material: p.material || 'Q345R',
+        openings,
+        weldWarningCount: openings.filter((o) => o.weldSeamWarning).length,
+      });
+    }
+  }
+
+  return sheets;
+}
+
+/**
+ * Generate a 1:1 AutoCAD R12 ASCII DXF file (units: mm) for cylindrical shell plate unroll
+ * and CNC opening layout.
+ */
+export function generateShellUnrollDxf(sheet: ShellUnrollSheet, spec: TechnicalSpec): string {
+  const lines: string[] = [];
+  const push = (...items: Array<string | number>) => {
+    for (const item of items) lines.push(String(item));
+  };
+
+  const addLine = (layer: string, x1: number, y1: number, x2: number, y2: number) => {
+    push(
+      '0', 'LINE',
+      '8', layer,
+      '10', x1.toFixed(2),
+      '20', y1.toFixed(2),
+      '30', '0.0',
+      '11', x2.toFixed(2),
+      '21', y2.toFixed(2),
+      '31', '0.0'
+    );
+  };
+
+  const addCircle = (layer: string, cx: number, cy: number, r: number) => {
+    push(
+      '0', 'CIRCLE',
+      '8', layer,
+      '10', cx.toFixed(2),
+      '20', cy.toFixed(2),
+      '30', '0.0',
+      '40', r.toFixed(2)
+    );
+  };
+
+  const addText = (layer: string, x: number, y: number, height: number, text: string) => {
+    const safe = text.replace(/[\r\n]+/g, ' ');
+    push(
+      '0', 'TEXT',
+      '8', layer,
+      '10', x.toFixed(2),
+      '20', y.toFixed(2),
+      '30', '0.0',
+      '40', height.toFixed(1),
+      '1', safe
+    );
+  };
+
+  const W = sheet.developedWidthMm;
+  const L = sheet.lengthMm;
+  const textH = Math.max(24, Math.min(80, Math.round(Math.min(W, L) * 0.028)));
+
+  push(
+    '0', 'SECTION',
+    '2', 'HEADER',
+    '9', '$ACADVER',
+    '1', 'AC1009',
+    '9', '$INSUNITS',
+    '70', '4',
+    '0', 'ENDSEC',
+    '0', 'SECTION',
+    '2', 'TABLES',
+    '0', 'TABLE',
+    '2', 'LAYER',
+    '70', '6'
+  );
+
+  const layers: Array<[string, number]> = [
+    ['PLATE_OUTLINE', 7],
+    ['WELD_SEAM', 1],
+    ['CENTERLINE', 3],
+    ['NOZZLE_CUTOUT', 4],
+    ['PAD_RING', 2],
+    ['ANNOTATION', 5],
+  ];
+  for (const [name, color] of layers) {
+    push('0', 'LAYER', '2', name, '70', '0', '62', color, '6', 'CONTINUOUS');
+  }
+
+  push(
+    '0', 'ENDTAB',
+    '0', 'ENDSEC',
+    '0', 'SECTION',
+    '2', 'ENTITIES'
+  );
+
+  // Plate blank outline (0,0) -> (W,L)
+  addLine('PLATE_OUTLINE', 0, 0, W, 0);
+  addLine('PLATE_OUTLINE', W, 0, W, L);
+  addLine('PLATE_OUTLINE', W, L, 0, L);
+  addLine('PLATE_OUTLINE', 0, L, 0, 0);
+
+  // Longitudinal weld seam reference lines at 0° and 360°
+  addLine('WELD_SEAM', 0, -textH * 1.2, 0, L + textH * 1.2);
+  addLine('WELD_SEAM', W, -textH * 1.2, W, L + textH * 1.2);
+
+  // Quarter azimuth reference lines (90°, 180°, 270°)
+  for (const deg of [90, 180, 270]) {
+    const qx = (deg / 360) * W;
+    addLine('CENTERLINE', qx, 0, qx, L);
+    addText('ANNOTATION', qx - textH * 0.8, -textH * 1.6, textH * 0.85, `${deg}DEG`);
+  }
+
+  // Nozzle cutouts + reinforcement pad rings + center crosshairs
+  for (const op of sheet.openings) {
+    const r = op.cutoutDiaMm / 2;
+    addCircle('NOZZLE_CUTOUT', op.arcXMm, op.axialYMm, r);
+    const cross = Math.max(r * 1.35, textH * 0.9);
+    addLine('CENTERLINE', op.arcXMm - cross, op.axialYMm, op.arcXMm + cross, op.axialYMm);
+    addLine('CENTERLINE', op.arcXMm, op.axialYMm - cross, op.arcXMm, op.axialYMm + cross);
+
+    if (op.padOuterDiaMm) {
+      addCircle('PAD_RING', op.arcXMm, op.axialYMm, op.padOuterDiaMm / 2);
+    }
+
+    addText(
+      'ANNOTATION',
+      op.arcXMm + r + textH * 0.35,
+      op.axialYMm + textH * 0.2,
+      textH * 0.8,
+      `${op.tag} DN${op.dn} D=${op.cutoutDiaMm} (${op.arcXMm},${op.axialYMm})`
+    );
+  }
+
+  // Title annotation above blank
+  addText(
+    'ANNOTATION',
+    0,
+    L + textH * 1.8,
+    textH,
+    `${spec.vesselTag} ${sheet.shellName} UNROLL ${W.toFixed(1)}x${L.toFixed(1)}x${sheet.thicknessMm} ${sheet.material} (${spec.drawingNo})`
+  );
+
+  push('0', 'ENDSEC', '0', 'EOF', '');
+  return lines.join('\n');
+}
+
+
 

@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { X, Copy, Check, Download, Plus, Trash2, Search, AlertTriangle, CheckCircle2, Crosshair, Wrench } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { X, Copy, Check, Download, Upload, ClipboardPaste, Plus, Trash2, Search, AlertTriangle, CheckCircle2, Crosshair, Wrench } from 'lucide-react';
 import type {
   AssemblyPoint,
   NozzleManholeParams,
@@ -17,6 +17,11 @@ import {
   GHPV_FLANGE_ACCENT,
   VESSEL_PRESETS,
 } from '../../data/presets';
+import {
+  exportNozzleTableCsv,
+  parseNozzleTableText,
+  TOWER_NOZZLE_SAMPLE_CSV,
+} from '../../core/douyinDeliveryTools';
 
 function triggerDownload(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -382,6 +387,44 @@ export const BatchNozzleDialog: React.FC<{
     ]);
   };
 
+  const [showPasteBox, setShowPasteBox] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [importMode, setImportMode] = useState<'append' | 'replace'>('append');
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleImportText = (raw: string, mode: 'append' | 'replace') => {
+    const res = parseNozzleTableText(raw, mainComponents, defaultParentId);
+    if (res.rows.length === 0) {
+      setImportNotice(res.warnings[0] || '未能解析出有效管口行，请检查逗号/制表符分隔格式');
+      return;
+    }
+    setRows((prev) => (mode === 'replace' ? res.rows : [...prev, ...res.rows]));
+    setImportNotice(
+      `已自动导入 ${res.rows.length} 个管口${
+        res.skippedCount > 0 ? `（跳过 ${res.skippedCount} 行无效数据）` : ''
+      }`
+    );
+    setShowPasteBox(false);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      handleImportText(text, importMode);
+    } catch {
+      setImportNotice('读取管口表文件失败，请确认文件为 UTF-8 编码的 CSV/TXT 文本');
+    }
+  };
+
+  const handleExportNozzlesCsv = () => {
+    const csv = exportNozzleTableCsv(rows, mainComponents);
+    triggerDownload(`${assembly.name}_管口表.csv`, csv, 'text/csv;charset=utf-8;');
+  };
+
   const handleApply = () => {
     const existingById = new Map(
       assembly.components
@@ -397,8 +440,10 @@ export const BatchNozzleDialog: React.FC<{
         const dn = Math.max(15, Number(r.dn) || 100);
         const pipeOD = Math.round(dn * 1.08 * 10) / 10;
         const flangeOD = Math.round(dn * 1.45 + 65);
+        const dnUnchanged = Boolean(origParams && origParams.dn === dn);
 
         const params: NozzleManholeParams = {
+          ...(origParams || {}),
           tag: r.tag.trim(),
           purpose: r.purpose.trim() || '工艺管口',
           isManhole: r.isManhole,
@@ -408,7 +453,7 @@ export const BatchNozzleDialog: React.FC<{
           flangeType: origParams?.flangeType ?? 'WN-RF',
           pn: r.pn || '150',
           dn,
-          pipeOD: origParams && origParams.dn === dn ? origParams.pipeOD : pipeOD,
+          pipeOD: dnUnchanged && origParams ? origParams.pipeOD : pipeOD,
           pipeThickness: origParams?.pipeThickness ?? (dn >= 200 ? 10 : 6),
           axialOffset: Number(r.axialOffset) || 0,
           angleDeg: Number(r.angleDeg) || 0,
@@ -418,12 +463,12 @@ export const BatchNozzleDialog: React.FC<{
           hasPad: r.hasPad,
           hasElbow: origParams?.hasElbow ?? false,
           elbowDirDeg: origParams?.elbowDirDeg ?? 0,
-          boltCount: dn >= 400 ? 20 : dn >= 200 ? 12 : 8,
-          flangeOD: origParams && origParams.dn === dn ? origParams.flangeOD : flangeOD,
-          flangeThickness: origParams?.flangeThickness ?? (dn >= 400 ? 38 : 26),
+          boltCount: dnUnchanged && origParams ? origParams.boltCount : dn >= 400 ? 20 : dn >= 200 ? 12 : 8,
+          flangeOD: dnUnchanged && origParams ? origParams.flangeOD : flangeOD,
+          flangeThickness: dnUnchanged && origParams ? origParams.flangeThickness : dn >= 400 ? 38 : 26,
           material: origParams?.material ?? '16MnIII',
           pipeMaterial: origParams?.pipeMaterial ?? '20',
-          density: 7.85,
+          density: origParams?.density ?? 7.85,
         };
 
         return {
@@ -434,7 +479,12 @@ export const BatchNozzleDialog: React.FC<{
           parentId: r.parentId || defaultParentId,
           visible: orig?.visible ?? true,
           color: orig?.color ?? { ...GHPV_FLANGE_ACCENT },
-          subNodes: params.hasPad ? ['接管', '法兰', '补强圈'] : ['接管', '法兰'],
+          subNodes:
+            orig?.subNodes && origParams?.isLiquidBoot
+              ? orig.subNodes
+              : params.hasPad
+              ? ['接管', '法兰', '补强圈']
+              : ['接管', '法兰'],
           params,
         };
       });
@@ -449,11 +499,11 @@ export const BatchNozzleDialog: React.FC<{
         role="dialog"
         aria-modal="true"
         aria-label="批量管口建模"
-        className="w-[860px] max-w-[95vw] h-[70vh] flex flex-col bg-[#f3f4f6] border border-[#64748b] shadow-2xl rounded-[3px] overflow-hidden"
+        className="w-[900px] max-w-[95vw] h-[76vh] flex flex-col bg-[#f3f4f6] border border-[#64748b] shadow-2xl rounded-[3px] overflow-hidden"
       >
         <div className="h-[28px] px-3 flex items-center justify-between bg-gradient-to-b from-white to-[#e5e9f0] border-b border-[#cbd5e1] shrink-0">
           <span className="text-[12px] font-semibold text-[#1e293b]">
-            批量管口建模与导入 — {assembly.name}
+            批量管口建模与自动导入 — {assembly.name}
           </span>
           <button
             type="button"
@@ -464,6 +514,120 @@ export const BatchNozzleDialog: React.FC<{
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        {/* Auto-Import Toolbar (CSV / Excel Clipboard Paste / Export) */}
+        <div className="px-3 py-1.5 bg-[#eef1f5] border-b border-[#cbd5e1] flex flex-wrap items-center justify-between gap-2 text-[11px] shrink-0">
+          <div className="flex items-center gap-1.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.tsv,.txt"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-2.5 h-[24px] flex items-center gap-1 bg-white hover:bg-[#dbeafe] border border-[#94a3b8] rounded-[2px] text-[#1e293b]"
+            >
+              <Upload className="w-3.5 h-3.5 text-[#2563eb]" />
+              <span>导入管口表 (.csv/.txt)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPasteBox((v) => !v)}
+              className={`px-2.5 h-[24px] flex items-center gap-1 border rounded-[2px] ${
+                showPasteBox
+                  ? 'bg-[#2563eb] text-white border-[#1d4ed8]'
+                  : 'bg-white hover:bg-[#dbeafe] border-[#94a3b8] text-[#1e293b]'
+              }`}
+            >
+              <ClipboardPaste className="w-3.5 h-3.5" />
+              <span>粘贴 Excel 管口表</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportNozzlesCsv}
+              className="px-2.5 h-[24px] flex items-center gap-1 bg-white hover:bg-[#dcfce7] border border-[#94a3b8] rounded-[2px] text-[#166534]"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>导出管口表 (.csv)</span>
+            </button>
+          </div>
+          <div className="flex items-center gap-2 text-[10.5px] text-[#475569]">
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="nozzle-import-mode"
+                checked={importMode === 'append'}
+                onChange={() => setImportMode('append')}
+              />
+              <span>追加导入</span>
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="nozzle-import-mode"
+                checked={importMode === 'replace'}
+                onChange={() => setImportMode('replace')}
+              />
+              <span>覆盖现有</span>
+            </label>
+          </div>
+        </div>
+
+        {showPasteBox && (
+          <div className="px-3 py-2 bg-[#f8fafc] border-b border-[#cbd5e1] space-y-1.5 text-[11px] shrink-0">
+            <div className="flex items-center justify-between">
+              <span className="text-[#334155] font-medium">
+                直接粘贴 Excel 工艺管口表或 CSV 文本（自动识别 符号 / 用途 / DN / PN / 定位距离 / 方位角 / 外伸 / 补强圈 / 人孔）
+              </span>
+              <button
+                type="button"
+                onClick={() => setPasteText(TOWER_NOZZLE_SAMPLE_CSV)}
+                className="px-2 h-[21px] bg-white hover:bg-[#eff6ff] border border-[#93c5fd] text-[#1d4ed8] rounded-[2px]"
+              >
+                填入塔器典型管口示例
+              </button>
+            </div>
+            <textarea
+              rows={4}
+              value={pasteText}
+              onChange={(e) => setPasteText(e.target.value)}
+              placeholder="例如：N1,塔顶气相口,250,150,200,0,280,是,否"
+              className="w-full p-1.5 font-mono text-[10.5px] bg-white border border-[#cbd5e1] rounded-[2px] focus:border-[#2563eb] focus:outline-none"
+            />
+            <div className="flex items-center justify-end gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowPasteBox(false)}
+                className="px-3 h-[23px] bg-white hover:bg-[#f1f5f9] border border-[#94a3b8] rounded-[2px]"
+              >
+                收起
+              </button>
+              <button
+                type="button"
+                onClick={() => handleImportText(pasteText, importMode)}
+                className="px-3 h-[23px] bg-[#0f766e] hover:bg-[#115e59] text-white font-medium rounded-[2px]"
+              >
+                解析并自动导入管口
+              </button>
+            </div>
+          </div>
+        )}
+
+        {importNotice && (
+          <div className="px-3 py-1 bg-[#eff6ff] border-b border-[#bfdbfe] text-[11px] text-[#1e40af] flex items-center justify-between shrink-0">
+            <span>{importNotice}</span>
+            <button
+              type="button"
+              onClick={() => setImportNotice(null)}
+              className="text-[10px] underline hover:text-[#1e3a8a]"
+            >
+              知道了
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-auto bg-white p-2">
           <table className="w-full border-collapse text-[11px] tabular-nums">
