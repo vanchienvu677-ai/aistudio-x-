@@ -10,6 +10,8 @@ import {
   Square,
   X,
   ClipboardCheck,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import type { ComponentType } from '../types/vessel';
 import { VESSEL_PRESETS } from '../data/presets';
@@ -62,6 +64,10 @@ interface RibbonToolbarProps {
   onNewDocument: () => void;
   onOpenDocument: () => void;
   onSaveDocument: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   onExportStl: () => void;
   onOpenAbout: () => void;
   onOpenConfig: () => void;
@@ -97,6 +103,10 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
   onNewDocument,
   onOpenDocument,
   onSaveDocument,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
   onExportStl,
   onOpenAbout,
   onOpenConfig,
@@ -324,6 +334,26 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
           </button>
           <button
             type="button"
+            onClick={onUndo}
+            disabled={!canUndo}
+            title="撤销 (Ctrl/Cmd+Z)"
+            aria-label="撤销"
+            className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title="重做 (Shift+Ctrl/Cmd+Z)"
+            aria-label="重做"
+            className="p-1 rounded hover:bg-[#dbeafe] text-[#334155] hover:text-[#1d4ed8] disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
             onClick={onExportStl}
             title="另存为三维模型 (.stp / .igs / .stl / .glb / .obj)"
             aria-label="另存为三维模型"
@@ -523,8 +553,10 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = ({
             onChange={(e) => onSelectPreset(e.target.value)}
             className="h-[19px] px-1.5 text-[11px] bg-white border border-[#cbd5e1] rounded-[2px] text-[#1e293b] max-w-[240px] focus:outline-none focus:border-[#2563eb]"
           >
-            {importedDocLabel && (
-              <option value="__imported__">已导入: {importedDocLabel}</option>
+            {(importedDocLabel || activePresetId === '__imported__') && (
+              <option value="__imported__">
+                已导入: {importedDocLabel || activeVesselTitle || '外部工程'}
+              </option>
             )}
             {VESSEL_PRESETS.map((p) => (
               <option key={p.id} value={p.id}>

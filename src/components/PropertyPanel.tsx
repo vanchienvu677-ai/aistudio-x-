@@ -18,15 +18,14 @@ import type {
   CameraAngles,
   RgbaColor,
   TechnicalSpec,
-  TubeLayoutParams,
   VesselComponent,
 } from '../types/vessel';
 import {
   buildVesselFromAiSpec,
   computeComponentMetrics,
-  computeTubeLayout,
   getComponentTypeLabel,
 } from '../core/vesselMath';
+import { describeSubNode, getFieldMeaning } from '../core/fieldGlossary';
 import {
   decodeTextBufferSmart,
   extractTextFromCadDatasheetFile,
@@ -156,6 +155,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const [colorExpanded, setColorExpanded] = useState(true);
   const [rawTextExpanded, setRawTextExpanded] = useState(false);
   const [dockTab, setDockTab] = useState<'ops' | 'camera'>('ops');
+  const [activeFieldHint, setActiveFieldHint] = useState<{ label: string; meaning: string } | null>(null);
+
+  useEffect(() => {
+    setActiveFieldHint(null);
+  }, [component?.id, selectedSubNode, assembly?.id, activePropTab]);
 
   // AI Modeling docked state (GHPV V2.1 Episode 15 + Model Config + PDF/Drawing/DXF Import)
   const [datasheetText, setDatasheetText] = useState<string>(SAMPLE_DATASHEETS[0].text);
@@ -497,49 +501,21 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
     onUpdateColor(component.id, { ...component.color, [channel]: val });
   };
 
+  const subNodeInfo =
+    component && selectedSubNode ? describeSubNode(component, selectedSubNode) : null;
+
   const isBaffleSubSelected =
     !!component &&
     component.type === 'tube_layout' &&
     !!selectedSubNode &&
     /^折流板\d+$/.test(selectedSubNode);
 
-  const baffleInfo = (() => {
-    if (!isBaffleSubSelected || !component) return null;
-    const tp = component.params as TubeLayoutParams;
-    const layout = computeTubeLayout(tp);
-    const outerDia = Math.max(100, tp.shellDiameter - 6);
-    const thickness = 8;
-    // 78% segmental baffle disc minus tube holes
-    const discAreaMm2 = Math.PI * (outerDia / 2) * (outerDia / 2) * 0.78;
-    const holeCount = Math.max(12, Math.round(layout.totalCount * 0.44));
-    const holesAreaMm2 = holeCount * Math.PI * ((tp.tubeOD + 0.8) / 2) ** 2;
-    const netAreaMm2 = Math.max(discAreaMm2 * 0.35, discAreaMm2 - holesAreaMm2);
-    const volumeM3 = (netAreaMm2 * thickness) / 1e9;
-    const weightKg = volumeM3 * 7850;
-    return {
-      name: selectedSubNode!,
-      color: { r: 170, g: 85, b: 255, a: 255 } as RgbaColor,
-      outerDia,
-      thickness,
-      holeCount,
-      volumeM3,
-      weightKg,
-    };
-  })();
+  const displayColor: RgbaColor = isBaffleSubSelected
+    ? { r: 170, g: 85, b: 255, a: 255 }
+    : component?.color ?? { r: 198, g: 136, b: 32, a: 255 };
 
-  const displayColor = baffleInfo ? baffleInfo.color : component?.color ?? { r: 198, g: 136, b: 32, a: 255 };
-
-  const rows: Array<{ label: string; value: string }> = baffleInfo
-    ? [
-        { label: '零件实体', value: '折流板' },
-        { label: '材料', value: 'Q235B' },
-        { label: '密度(t/m3)', value: '7.85' },
-        { label: '重量(kg)', value: baffleInfo.weightKg.toFixed(3) },
-        { label: '体积(m3)', value: baffleInfo.volumeM3.toFixed(6) },
-        { label: '外径(mm)', value: String(baffleInfo.outerDia) },
-        { label: '厚度(mm)', value: String(baffleInfo.thickness) },
-        { label: '开孔数量', value: String(baffleInfo.holeCount) },
-      ]
+  const rows: Array<{ label: string; value: string }> = subNodeInfo
+    ? subNodeInfo.rows
     : component && metrics
       ? [
           { label: '元件类型', value: getComponentTypeLabel(component.type) },
@@ -561,6 +537,33 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           { label: '规格描述', value: metrics.specText },
         ]
       : [];
+
+  const inspectField = (label: string) => {
+    setActiveFieldHint({ label, meaning: getFieldMeaning(label) });
+  };
+
+  const renderGlossaryRow = (label: string, value: string, rowKey: string, striped: boolean) => {
+    const meaning = getFieldMeaning(label);
+    const isActive = activeFieldHint?.label === label;
+    return (
+      <div
+        key={rowKey}
+        title={meaning}
+        onMouseEnter={() => setActiveFieldHint({ label, meaning })}
+        onClick={() => setActiveFieldHint({ label, meaning })}
+        className={`grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] cursor-help transition-colors ${
+          isActive ? 'bg-[#eff6ff]' : striped ? 'bg-[#f8fafc]' : 'bg-white'
+        }`}
+      >
+        <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155] truncate">
+          {label}
+        </div>
+        <div className="px-1.5 py-0.5 flex items-center text-[#0f172a] truncate" title={value}>
+          {value || '—'}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <aside
@@ -856,21 +859,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
               ['图号', spec.drawingNo],
               ['项目名称', spec.projectName],
               ['设计单位', spec.companyName],
-            ].map(([k, v], i) => (
-              <div
-                key={k}
-                className={`grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] ${
-                  i % 2 === 1 ? 'bg-[#f8fafc]' : 'bg-white'
-                }`}
-              >
-                <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155] truncate">
-                  {k}
-                </div>
-                <div className="px-1.5 py-0.5 flex items-center text-[#0f172a] truncate" title={v}>
-                  {v || '—'}
-                </div>
-              </div>
-            ))}
+            ].map(([k, v], i) => renderGlossaryRow(k, v, k, i % 2 === 1))}
 
             {/* Imported GHPV Model Archive (Provenance, Archive Files, Extra Metadata, Warnings, Raw Text) */}
             {importedGhpvInfo && (
@@ -1035,7 +1024,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
         ) : !component ? (
           assembly ? (
             <div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]">
+              <div
+                title={getFieldMeaning('装配点名')}
+                onMouseEnter={() => inspectField('装配点名')}
+                className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]"
+              >
                 <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
                   装配点名
                 </div>
@@ -1047,7 +1040,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   className="px-1.5 w-full h-full bg-white text-[#0f172a] focus:outline-none focus:bg-[#eff6ff]"
                 />
               </div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]">
+              <div
+                title={getFieldMeaning('方位型式')}
+                onMouseEnter={() => inspectField('方位型式')}
+                className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]"
+              >
                 <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
                   方位型式
                 </div>
@@ -1065,7 +1062,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   <option value="vertical">立式 (Vertical)</option>
                 </select>
               </div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]">
+              <div
+                title={getFieldMeaning('起始 X(mm)')}
+                onMouseEnter={() => inspectField('起始 X(mm)')}
+                className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]"
+              >
                 <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
                   起始 X(mm)
                 </div>
@@ -1077,7 +1078,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   className="px-1.5 w-full h-full bg-white text-[#0f172a] focus:outline-none focus:bg-[#eff6ff]"
                 />
               </div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]">
+              <div
+                title={getFieldMeaning('起始 Z(mm)')}
+                onMouseEnter={() => inspectField('起始 Z(mm)')}
+                className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]"
+              >
                 <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
                   起始 Z(mm)
                 </div>
@@ -1089,30 +1094,9 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                   className="px-1.5 w-full h-full bg-white text-[#0f172a] focus:outline-none focus:bg-[#eff6ff]"
                 />
               </div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] bg-[#f8fafc]">
-                <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155]">
-                  所含元件数
-                </div>
-                <div className="px-1.5 py-0.5 flex items-center text-[#0f172a]">
-                  {assembly.components.length} 项
-                </div>
-              </div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] bg-white">
-                <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155]">
-                  设备总重(kg)
-                </div>
-                <div className="px-1.5 py-0.5 flex items-center text-[#0f172a]">
-                  {totalVesselWeightKg.toFixed(1)}
-                </div>
-              </div>
-              <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] bg-[#f8fafc]">
-                <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155]">
-                  设备总容积(m³)
-                </div>
-                <div className="px-1.5 py-0.5 flex items-center text-[#0f172a]">
-                  {totalVesselVolumeM3.toFixed(4)}
-                </div>
-              </div>
+              {renderGlossaryRow('所含元件数', `${assembly.components.length} 项`, 'ap-count', true)}
+              {renderGlossaryRow('设备总重(kg)', totalVesselWeightKg.toFixed(1), 'ap-weight', false)}
+              {renderGlossaryRow('设备总容积(m³)', totalVesselVolumeM3.toFixed(4), 'ap-vol', true)}
             </div>
           ) : (
             <div className="p-3 text-[11.5px] text-[#64748b] space-y-2">
@@ -1121,14 +1105,27 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
           )
         ) : (
           <>
-            {/* 元件名 */}
-            <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]">
-              <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
-                元件名
+            {subNodeInfo && (
+              <div className="px-2 py-1 bg-[#eff6ff] border-b border-[#bfdbfe] text-[10px] leading-snug">
+                <div className="font-semibold text-[#1e3a8a] truncate">{subNodeInfo.partCategory}</div>
+                <div className="text-[#3b82f6] truncate" title={subNodeInfo.description}>
+                  {subNodeInfo.description}
+                </div>
               </div>
-              {baffleInfo ? (
-                <div className="px-1.5 flex items-center bg-white text-[#0f172a] font-medium">
-                  {baffleInfo.name}
+            )}
+
+            {/* 元件名 / 子零件名 */}
+            <div
+              title={getFieldMeaning('元件名')}
+              onMouseEnter={() => inspectField('元件名')}
+              className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]"
+            >
+              <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
+                {subNodeInfo ? '子零件名' : '元件名'}
+              </div>
+              {subNodeInfo ? (
+                <div className="px-1.5 flex items-center bg-white text-[#0f172a] font-medium truncate">
+                  {subNodeInfo.subNodeName}
                 </div>
               ) : (
                 <input
@@ -1142,7 +1139,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             </div>
 
             {/* 模型颜色 (Expandable RGBA) */}
-            <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]">
+            <div
+              title={getFieldMeaning('模型颜色')}
+              onMouseEnter={() => inspectField('模型颜色')}
+              className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[22px]"
+            >
               <button
                 type="button"
                 onClick={() => setColorExpanded((v) => !v)}
@@ -1184,8 +1185,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
                       max={255}
                       aria-label={`颜色 ${label}`}
                       value={val}
-                      readOnly={!!baffleInfo}
-                      onChange={(e) => !baffleInfo && handleChannel(key, e.target.value)}
+                      readOnly={isBaffleSubSelected}
+                      onChange={(e) => !isBaffleSubSelected && handleChannel(key, e.target.value)}
                       className="px-1.5 w-full h-full bg-white text-[#0f172a] focus:outline-none focus:bg-[#eff6ff]"
                     />
                   </div>
@@ -1194,7 +1195,11 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             )}
 
             {/* 详细参数 -> 设置 button */}
-            <div className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[24px]">
+            <div
+              title={getFieldMeaning('详细参数')}
+              onMouseEnter={() => inspectField('详细参数')}
+              className="grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] h-[24px]"
+            >
               <div className="px-2 flex items-center bg-[#f8fafc] border-r border-[#e5e7eb] text-[#334155]">
                 详细参数
               </div>
@@ -1210,24 +1215,34 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             </div>
 
             {/* Computed Engineering Attributes */}
-            {rows.map((row, i) => (
-              <div
-                key={`${row.label}-${i}`}
-                className={`grid grid-cols-[110px_1fr] border-b border-[#e5e7eb] min-h-[21px] ${
-                  i % 2 === 1 ? 'bg-[#f8fafc]' : 'bg-white'
-                }`}
-              >
-                <div className="px-2 py-0.5 flex items-center border-r border-[#e5e7eb] text-[#334155] truncate">
-                  {row.label}
-                </div>
-                <div className="px-1.5 py-0.5 flex items-center text-[#0f172a] truncate" title={row.value}>
-                  {row.value}
-                </div>
-              </div>
-            ))}
+            {rows.map((row, i) =>
+              renderGlossaryRow(row.label, row.value, `${row.label}-${i}`, i % 2 === 1)
+            )}
           </>
         )}
       </div>
+
+      {/* Engineering Field Glossary Strip */}
+      {activePropTab !== 'aiModel' && (
+        <div
+          aria-live="polite"
+          className="px-2 py-1 bg-[#f8fafc] border-t border-[#e2e8f0] text-[10px] leading-snug text-[#475569] min-h-[34px] flex items-center shrink-0"
+        >
+          {activeFieldHint ? (
+            <span className="line-clamp-2" title={`${activeFieldHint.label}: ${activeFieldHint.meaning}`}>
+              <strong className="text-[#1e3a8a] font-medium">{activeFieldHint.label}：</strong>
+              {activeFieldHint.meaning}
+            </span>
+          ) : subNodeInfo ? (
+            <span className="line-clamp-2" title={subNodeInfo.description}>
+              <strong className="text-[#1e3a8a] font-medium">{subNodeInfo.subNodeName}：</strong>
+              {subNodeInfo.description}
+            </span>
+          ) : (
+            <span className="text-[#64748b]">悬停或点击属性字段，查看国标/行标工程释义</span>
+          )}
+        </div>
+      )}
 
       {/* GHPV V2.1 Sub-Tab Strip: 属性 | 用户参数 | AI 建模 */}
       <div className="h-[22px] px-1.5 flex items-center gap-0.5 bg-[#eef1f5] border-t border-[#cbd5e1] shrink-0">
