@@ -157,7 +157,26 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiSteps, setAiSteps] = useState<AiStepLog[]>([]);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiServerReady, setAiServerReady] = useState<boolean | null>(null);
   const sketchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (activePropTab !== 'aiModel') return;
+    let cancelled = false;
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { aiReady?: boolean } | null) => {
+        if (!cancelled && data && typeof data.aiReady === 'boolean') {
+          setAiServerReady(data.aiReady);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAiServerReady(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePropTab]);
 
   useEffect(() => {
     if (injectedAiDatasheet && injectedAiDatasheet.text) {
@@ -527,6 +546,16 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({
             <div className="text-[10.5px] text-[#475569] leading-snug">
               支持导入 PDF 图纸、PNG/JPG 条件图、DXF/CSV 数据表或粘贴工艺文本，配置 AI 模型参数后一键生成 3D 压力容器。
             </div>
+
+            {aiServerReady === false && (
+              <div className="px-2 py-1.5 bg-[#fffbeb] border border-[#fcd34d] rounded-[2px] text-[10px] text-[#92400e] flex items-start gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#d97706]" />
+                <span>
+                  服务端暂未检测到 <code className="font-mono">GEMINI_API_KEY</code>，请在 AI Studio 的{' '}
+                  <strong>Settings &gt; Secrets</strong> 面板配置密钥后使用 AI 解析建模。
+                </span>
+              </div>
+            )}
 
             {/* Collapsible AI Model Configuration Box */}
             <div className="border border-[#cbd5e1] rounded-[2px] bg-[#f8fafc] overflow-hidden">

@@ -255,11 +255,30 @@ async function startServer() {
         config.thinkingConfig = { thinkingLevel };
       }
 
-      const response = await ai.models.generateContent({
-        model: requestedModel,
-        contents: [{ role: 'user', parts }],
-        config,
-      });
+      let response: Awaited<ReturnType<typeof ai.models.generateContent>> | null = null;
+      let lastErr: unknown = null;
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          response = await ai.models.generateContent({
+            model: requestedModel,
+            contents: [{ role: 'user', parts }],
+            config,
+          });
+          break;
+        } catch (err) {
+          lastErr = err;
+          const status = (err as { status?: number; code?: number })?.status ?? (err as { code?: number })?.code;
+          const isTransient = status === 429 || status === 503 || status === 500;
+          if (!isTransient || attempt === maxAttempts) {
+            throw err;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 400 * Math.pow(2, attempt - 1)));
+        }
+      }
+      if (!response) {
+        throw lastErr ?? new Error('Empty AI response');
+      }
 
       const rawText = response.text?.trim();
       if (!rawText) {
@@ -301,6 +320,26 @@ async function startServer() {
       res.json({ parsed, steps, usedModel: requestedModel });
     } catch (err) {
       console.error('[GHPV AI Modeling Error]', err);
+      const status = (err as { status?: number; code?: number })?.status ?? (err as { code?: number })?.code;
+      const msg = err instanceof Error ? err.message : '';
+      if (status === 403 || status === 400 && /API_KEY|PERMISSION_DENIED/i.test(msg)) {
+        res.status(403).json({
+          error: 'GEMINI_API_KEY 无效或权限不足，请在 AI Studio 的 Settings > Secrets 面板检查并更新密钥。',
+        });
+        return;
+      }
+      if (status === 429 || /RESOURCE_EXHAUSTED/i.test(msg)) {
+        res.status(429).json({
+          error: 'AI 接口配额已达上限，请稍后重试或在 Settings > Secrets 中切换已启用计费的密钥。',
+        });
+        return;
+      }
+      if (status === 404 || /NOT_FOUND/i.test(msg)) {
+        res.status(404).json({
+          error: '请求的 AI 模型暂不可用，请切换为 Gemini 4 Flash (gemini-4-hydrogen) 后重试。',
+        });
+        return;
+      }
       res.status(502).json({ error: 'AI 建模服务暂时不可用，请检查输入参数或稍后重试。' });
     }
   });

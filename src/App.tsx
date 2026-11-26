@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import type {
   AssemblyPoint,
   CameraAngles,
@@ -48,60 +48,22 @@ function cloneAssemblies(list: AssemblyPoint[]): AssemblyPoint[] {
   return JSON.parse(JSON.stringify(list)) as AssemblyPoint[];
 }
 
-// ===== 本地暂存（localStorage 自动保存，刷新/关浏览器后恢复）=====
-const AUTOSAVE_KEY = 'ghpv_web_autosave_v1';
-
-interface AutosavePayload {
-  version: string;
-  savedAt: number;
-  activePresetId: string;
-  spec: TechnicalSpec;
-  assemblies: AssemblyPoint[];
-}
-
-function loadAutosave(): AutosavePayload | null {
-  try {
-    const raw = localStorage.getItem(AUTOSAVE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as AutosavePayload;
-    if (
-      parsed.version !== 'GHPV-V2.1' ||
-      !parsed.spec ||
-      !Array.isArray(parsed.assemblies) ||
-      parsed.assemblies.length === 0
-    ) {
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export default function App() {
   const initialPreset =
     VESSEL_PRESETS.find((p) => p.id === 'u_exchanger') || VESSEL_PRESETS[0];
 
-  // 暂存恢复：惰性读取一次，有草稿则整体接管初始状态
-  const [restored] = useState(() => loadAutosave());
-  const restoredFirst = restored?.assemblies[0];
-
   const [activeTab, setActiveTab] = useState<RibbonTab>('start');
-  const [activePresetId, setActivePresetId] = useState<string>(
-    restored?.activePresetId ?? initialPreset.id
-  );
-  const [spec, setSpec] = useState<TechnicalSpec>(
-    restored ? { ...restored.spec } : { ...initialPreset.spec }
-  );
+  const [activePresetId, setActivePresetId] = useState<string>(initialPreset.id);
+  const [spec, setSpec] = useState<TechnicalSpec>({ ...initialPreset.spec });
   const [assemblies, setAssemblies] = useState<AssemblyPoint[]>(() =>
-    restored ? cloneAssemblies(restored.assemblies) : cloneAssemblies(initialPreset.assemblies)
+    cloneAssemblies(initialPreset.assemblies)
   );
   const [selectedAssemblyId, setSelectedAssemblyId] = useState<string>(
-    restoredFirst?.id ?? initialPreset.assemblies[0].id
+    initialPreset.assemblies[0].id
   );
   const [selectedComponentId, setSelectedComponentId] = useState<string | null>(
-    (restoredFirst ?? initialPreset.assemblies[0]).components.find((c) => c.type === 'shell')?.id ??
-      (restoredFirst ?? initialPreset.assemblies[0]).components[0]?.id ??
+    initialPreset.assemblies[0].components.find((c) => c.type === 'shell')?.id ??
+      initialPreset.assemblies[0].components[0]?.id ??
       null
   );
   const [selectedSubNode, setSelectedSubNode] = useState<string | null>(null);
@@ -166,132 +128,10 @@ export default function App() {
   const [propTab, setPropTab] = useState<PropPanelTab>('property');
 
   const [statusMessage, setStatusMessage] = useState<string>(
-    restored
-      ? `已自动恢复上次暂存工程（${new Date(restored.savedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}）— 切换预设或新建空白工程可重新开始`
-      : '就绪 — GHPV V2.1 高惠PV压力容器数字化交付系统'
+    '就绪 — GHPV V2.1 高惠PV压力容器数字化交付系统'
   );
 
   const viewportRef = useRef<Viewport3DHandle | null>(null);
-
-  // 本地暂存：核心工作区变化后 800ms 防抖写入 localStorage
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      try {
-        const payload: AutosavePayload = {
-          version: 'GHPV-V2.1',
-          savedAt: Date.now(),
-          activePresetId,
-          spec,
-          assemblies,
-        };
-        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
-      } catch {
-        // 存储已满或隐私模式：暂存不可用时静默跳过，不影响建模
-      }
-    }, 800);
-    return () => window.clearTimeout(t);
-  }, [activePresetId, spec, assemblies]);
-
-  // ===== 撤销/重做历史栈（快照对比法，栈深 60）=====
-  interface HistorySnapshot {
-    activePresetId: string;
-    spec: TechnicalSpec;
-    assemblies: AssemblyPoint[];
-  }
-  const [history, setHistory] = useState<{ past: HistorySnapshot[]; future: HistorySnapshot[] }>({
-    past: [],
-    future: [],
-  });
-  const lastCommittedRef = useRef<HistorySnapshot | null>(null);
-  const suppressHistoryRef = useRef(false);
-
-  useEffect(() => {
-    const snap: HistorySnapshot = { activePresetId, spec, assemblies };
-    const last = lastCommittedRef.current;
-    if (last === null) {
-      // 首次挂载仅记录基线，不产生历史
-      lastCommittedRef.current = snap;
-      return;
-    }
-    if (last.spec === spec && last.assemblies === assemblies) return;
-    if (suppressHistoryRef.current) {
-      // 撤销/重做自身引起的变化：只前移基线，不入栈
-      suppressHistoryRef.current = false;
-      lastCommittedRef.current = snap;
-      return;
-    }
-    setHistory((h) => ({ past: [...h.past.slice(-59), last], future: [] }));
-    lastCommittedRef.current = snap;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec, assemblies, activePresetId]);
-
-  const restoreSelection = (targetAssemblies: AssemblyPoint[]) => {
-    const ap =
-      targetAssemblies.find((a) => a.id === selectedAssemblyId) ?? targetAssemblies[0];
-    setSelectedAssemblyId(ap.id);
-    const comp =
-      ap.components.find((c) => c.id === selectedComponentId) ??
-      ap.components.find((c) => c.type === 'shell') ??
-      ap.components[0] ??
-      null;
-    setSelectedComponentId(comp?.id ?? null);
-    setSelectedSubNode(null);
-  };
-
-  const handleUndo = () => {
-    if (!history.past.length) return;
-    const prev = history.past[history.past.length - 1];
-    const current: HistorySnapshot = { activePresetId, spec, assemblies };
-    suppressHistoryRef.current = true;
-    setHistory({
-      past: history.past.slice(0, -1),
-      future: [current, ...history.future].slice(0, 60),
-    });
-    setActivePresetId(prev.activePresetId);
-    setSpec({ ...prev.spec });
-    setAssemblies(cloneAssemblies(prev.assemblies));
-    restoreSelection(prev.assemblies);
-    setStatusMessage(`已撤销 — 还可撤销 ${history.past.length - 1} 步`);
-  };
-
-  const handleRedo = () => {
-    if (!history.future.length) return;
-    const next = history.future[0];
-    const current: HistorySnapshot = { activePresetId, spec, assemblies };
-    suppressHistoryRef.current = true;
-    setHistory({
-      past: [current, ...history.past].slice(-60),
-      future: history.future.slice(1),
-    });
-    setActivePresetId(next.activePresetId);
-    setSpec({ ...next.spec });
-    setAssemblies(cloneAssemblies(next.assemblies));
-    restoreSelection(next.assemblies);
-    setStatusMessage(`已重做 — 还可重做 ${history.future.length - 1} 步`);
-  };
-
-  // 快捷键：Cmd/Ctrl+Z 撤销、Shift+Cmd/Ctrl+Z 重做（输入框内不拦截）
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-      e.preventDefault();
-      if (e.shiftKey) handleRedo();
-      else handleUndo();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [history, spec, assemblies, selectedAssemblyId, selectedComponentId]);
 
   const bomSummary = useMemo(() => generateBOM(assemblies), [assemblies]);
 
@@ -424,20 +264,7 @@ export default function App() {
     a.download = `${spec.vesselTag || 'vessel'}.ghpv`;
     a.click();
     URL.revokeObjectURL(url);
-    // 手动保存时同步刷新本地暂存
-    try {
-      const draft: AutosavePayload = {
-        version: 'GHPV-V2.1',
-        savedAt: Date.now(),
-        activePresetId,
-        spec,
-        assemblies,
-      };
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(draft));
-    } catch {
-      // 暂存不可用时忽略，文件已下载成功
-    }
-    setStatusMessage(`已保存高惠工程文件并同步本地暂存: ${spec.vesselTag || 'vessel'}.ghpv`);
+    setStatusMessage(`已保存高惠工程文件: ${spec.vesselTag || 'vessel'}.ghpv`);
   };
 
   const handleOpenDocument = () => {
@@ -695,10 +522,6 @@ export default function App() {
         onNewDocument={handleNewDocument}
         onOpenDocument={handleOpenDocument}
         onSaveDocument={handleSaveDocument}
-        onUndo={handleUndo}
-        onRedo={handleRedo}
-        canUndo={history.past.length > 0}
-        canRedo={history.future.length > 0}
         onExportStl={handleOpenExport3D}
         onOpenAbout={() => setShowAboutDialog(true)}
         onOpenConfig={() => setShowConfigDialog(true)}
@@ -884,6 +707,11 @@ export default function App() {
       {showWizard && (
         <GuidedWizardDialog
           onApply={handleApplyWizard}
+          onGenerateAndDraw={(presetId, nextSpec, nextAssemblies) => {
+            handleApplyWizard(presetId, nextSpec, nextAssemblies);
+            setShow2DCad(true);
+            setStatusMessage(`向导式建模并已一键生成 2D 工程图: ${nextSpec.vesselTag}`);
+          }}
           onClose={() => setShowWizard(false)}
         />
       )}
@@ -928,6 +756,11 @@ export default function App() {
             setShowInterferenceCheck(false);
           }}
           onAutoFix={handleAutoFixInterferences}
+          onOpen2DDrawing={() => {
+            setShowInterferenceCheck(false);
+            setShow2DCad(true);
+            setStatusMessage(`干涉检查通过，已一键生成 2D 工程图 (${spec.vesselTag})`);
+          }}
           onClose={() => setShowInterferenceCheck(false)}
         />
       )}

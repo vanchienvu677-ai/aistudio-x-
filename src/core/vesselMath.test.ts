@@ -772,6 +772,30 @@ test('fixed secondary attachments maintain accurate 1:1 engineering proportions 
   );
 });
 
+test('all standard VESSEL_PRESETS pass interference check cleanly and BKU isolates Ep 11 U-tube clash', () => {
+  for (const preset of VESSEL_PRESETS) {
+    const report = checkInterferences(preset.assemblies);
+    if (preset.id === 'bku_reboiler') {
+      assert.equal(
+        report.errorCount,
+        1,
+        `BKU preset should isolate the single Ep 11 U-tube clash, got ${report.issues.map((i) => i.title).join(', ')}`
+      );
+      assert.ok(report.issues[0]?.title.includes('U形管'), 'BKU clash should be the U-tube bundle ligament clash');
+      const fixed = autoFixInterferences(preset.assemblies);
+      const after = checkInterferences(fixed.assemblies);
+      assert.equal(after.errorCount, 0, 'BKU autoFix should clear all conflicts');
+    } else {
+      assert.equal(
+        report.errorCount,
+        0,
+        `Preset ${preset.id} should have 0 interference errors, got: ${report.issues.map((i) => i.title).join(', ')}`
+      );
+    }
+  }
+});
+
+
 
 
 

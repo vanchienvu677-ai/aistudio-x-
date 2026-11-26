@@ -244,7 +244,7 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.12;
+      renderer.toneMappingExposure = 1.0;
       renderer.localClippingEnabled = false;
       renderer.shadowMap.enabled = !isSoftwareGl;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -255,19 +255,20 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       container.replaceChildren();
       container.appendChild(renderer.domElement);
 
-      // Studio PBR Environment Reflection (RoomEnvironment on every device)
+      // Studio PBR Environment Reflection (RoomEnvironment on every device, balanced intensity)
       const pmrem = new THREE.PMREMGenerator(renderer);
       const roomEnv = new RoomEnvironment();
       const envRT = pmrem.fromScene(roomEnv, 0.04);
       scene.environment = envRT.texture;
+      scene.environmentIntensity = 0.52;
       roomEnv.dispose();
       pmrem.dispose();
 
-      // 3-Point CAD Studio Lighting Rig
-      const hemiLight = new THREE.HemisphereLight(0xf0f7ff, 0x8ea4b5, 1.05);
+      // 3-Point CAD Studio Lighting Rig (warm key + cool hemisphere fill + crisp rim)
+      const hemiLight = new THREE.HemisphereLight(0xedf5ff, 0x6f8296, 0.58);
       scene.add(hemiLight);
 
-      const keyLight = new THREE.DirectionalLight(0xfff6e5, 1.55);
+      const keyLight = new THREE.DirectionalLight(0xfff3de, 1.45);
       keyLight.position.set(6, 9, 7);
       if (!isSoftwareGl) {
         keyLight.castShadow = true;
@@ -277,7 +278,7 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
       }
       scene.add(keyLight);
 
-      const rimLight = new THREE.DirectionalLight(0xcfe8ff, 0.7);
+      const rimLight = new THREE.DirectionalLight(0xbfdbfe, 0.52);
       rimLight.position.set(-7, -3, -6);
       scene.add(rimLight);
 

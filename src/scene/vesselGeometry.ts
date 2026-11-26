@@ -50,16 +50,21 @@ function createComponentMaterial(
   renderMode: RenderMode,
   isSelected: boolean,
   clippingPlanes: THREE.Plane[],
-  roughness = 0.34,
-  metalness = 0.44
+  roughness = 0.36,
+  metalness = 0.38
 ): THREE.Material {
-  const baseColor = new THREE.Color(color.r / 255, color.g / 255, color.b / 255);
+  const baseColor = new THREE.Color().setRGB(
+    color.r / 255,
+    color.g / 255,
+    color.b / 255,
+    THREE.SRGBColorSpace
+  );
   const opacity = Math.max(0.08, Math.min(1, color.a / 255));
   const transparent = opacity < 0.99;
 
   if (renderMode === 'wireframe') {
     return new THREE.MeshBasicMaterial({
-      color: isSelected ? new THREE.Color(0x0066ff) : baseColor.clone().multiplyScalar(0.75),
+      color: isSelected ? new THREE.Color(0x0066ff) : baseColor.clone().multiplyScalar(0.78),
       wireframe: true,
       clippingPlanes,
     });
@@ -78,14 +83,14 @@ function createComponentMaterial(
 
   return new THREE.MeshStandardMaterial({
     color: baseColor,
-    roughness,
-    metalness,
+    roughness: transparent ? Math.max(roughness, 0.44) : roughness,
+    metalness: transparent ? Math.min(metalness, 0.22) : metalness,
     transparent,
     opacity,
     depthWrite: !transparent,
     side: THREE.DoubleSide,
     emissive: isSelected ? new THREE.Color(0x2563eb) : new THREE.Color(0x000000),
-    emissiveIntensity: isSelected ? 0.14 : 0,
+    emissiveIntensity: isSelected ? 0.16 : 0,
     clippingPlanes,
     clipShadows: true,
   });

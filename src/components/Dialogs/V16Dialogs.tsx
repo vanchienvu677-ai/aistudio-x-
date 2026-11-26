@@ -33,8 +33,9 @@ function triggerDownload(filename: string, content: string, mime: string) {
  * ============================================================================ */
 export const GuidedWizardDialog: React.FC<{
   onApply: (presetId: string, spec: TechnicalSpec, assemblies: AssemblyPoint[]) => void;
+  onGenerateAndDraw?: (presetId: string, spec: TechnicalSpec, assemblies: AssemblyPoint[]) => void;
   onClose: () => void;
-}> = ({ onApply, onClose }) => {
+}> = ({ onApply, onGenerateAndDraw, onClose }) => {
   const [templateId, setTemplateId] = useState<string>('u_exchanger');
   const [vesselTag, setVesselTag] = useState<string>('E-402');
   const [diameter, setDiameter] = useState<number>(1000);
@@ -72,8 +73,7 @@ export const GuidedWizardDialog: React.FC<{
     }
   };
 
-  const handleGenerate = (e: React.FormEvent) => {
-    e.preventDefault();
+  const buildWizardResult = () => {
     const basePreset = VESSEL_PRESETS.find((p) => p.id === templateId) || VESSEL_PRESETS[0];
     const clonedAssemblies = JSON.parse(JSON.stringify(basePreset.assemblies)) as AssemblyPoint[];
     const matInfo = MATERIAL_CATALOG.find((m) => m.grade === material);
@@ -136,7 +136,23 @@ export const GuidedWizardDialog: React.FC<{
       testPressure: Math.round((Number(designPressure) || 1.6) * 1.25 * 100) / 100,
     };
 
+    return { nextSpec, clonedAssemblies };
+  };
+
+  const handleGenerate = (e: React.FormEvent) => {
+    e.preventDefault();
+    const { nextSpec, clonedAssemblies } = buildWizardResult();
     onApply(templateId, nextSpec, clonedAssemblies);
+    onClose();
+  };
+
+  const handleGenerateAndDraw = () => {
+    const { nextSpec, clonedAssemblies } = buildWizardResult();
+    if (onGenerateAndDraw) {
+      onGenerateAndDraw(templateId, nextSpec, clonedAssemblies);
+    } else {
+      onApply(templateId, nextSpec, clonedAssemblies);
+    }
     onClose();
   };
 
@@ -277,6 +293,15 @@ export const GuidedWizardDialog: React.FC<{
             >
               取消
             </button>
+            {onGenerateAndDraw && (
+              <button
+                type="button"
+                onClick={handleGenerateAndDraw}
+                className="px-3.5 h-[26px] bg-[#0f766e] hover:bg-[#115e59] text-white font-medium rounded-[2px]"
+              >
+                一键建模并出图
+              </button>
+            )}
             <button
               type="submit"
               className="px-4 h-[26px] bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-medium rounded-[2px]"
@@ -1007,8 +1032,9 @@ export const InterferenceCheckDialog: React.FC<{
   spec: TechnicalSpec;
   onLocateComponent: (compId: string) => void;
   onAutoFix: () => void;
+  onOpen2DDrawing?: () => void;
   onClose: () => void;
-}> = ({ assemblies, spec, onLocateComponent, onAutoFix, onClose }) => {
+}> = ({ assemblies, spec, onLocateComponent, onAutoFix, onOpen2DDrawing, onClose }) => {
   const report = useMemo(() => checkInterferences(assemblies), [assemblies]);
 
   return (
@@ -1124,7 +1150,7 @@ export const InterferenceCheckDialog: React.FC<{
             检查标准: GB/T 151-2014 换热管中心距 ≥1.25d · 法兰安装扳手操作间隙 ≥25mm
           </span>
           <div className="flex items-center gap-2">
-            {report.issues.length > 0 && (
+            {report.issues.length > 0 ? (
               <button
                 type="button"
                 onClick={onAutoFix}
@@ -1133,6 +1159,16 @@ export const InterferenceCheckDialog: React.FC<{
                 <Wrench className="w-3.5 h-3.5" />
                 <span>一键修正管束/避让</span>
               </button>
+            ) : (
+              onOpen2DDrawing && (
+                <button
+                  type="button"
+                  onClick={onOpen2DDrawing}
+                  className="px-3.5 h-[25px] flex items-center gap-1 bg-[#0f766e] hover:bg-[#115e59] text-white font-medium rounded-[2px]"
+                >
+                  <span>一键生成2D工程图</span>
+                </button>
+              )
             )}
             <button
               type="button"
